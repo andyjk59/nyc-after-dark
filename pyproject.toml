@@ -1,7 +1,7 @@
 [project]
-name = "wikipedia-deep-research"
+name = "nyc-overnight-energy"
 version = "0.1.0"
-description = "Deep research over Wikipedia: a lead fans out researchers that walk Wikipedia's links, then a writer turns their findings into a cited report"
+description = "Deep research over NYC's overnight electricity: a lead fans out researchers that query grid, building, lighting-model and satellite data, then a writer turns their findings into a cited answer on a map"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.109.0",
@@ -10,4 +10,14 @@ dependencies = [
     "google-cloud-aiplatform>=1.40.0",
     "httpx>=0.27",
     "python-dotenv>=1.0",
+    "duckdb>=1.1",
+]
+
+[dependency-groups]
+# The offline data build (uv run --group build build/...). Not installed on Cloud Run.
+build = [
+    "pandas>=2.2",
+    "pyarrow>=17",
+    "h3>=4.1",
+    "blackmarblepy>=2026.6",
 ]

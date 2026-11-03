@@ -1,3 +1,8 @@
-# wikipedia-deep-research
+# NYC After Dark: how much energy does New York waste overnight?
 
-The deep research pattern over Wikipedia, built from `wikipedia-deck-researchers`' pieces. You give it a question and an article to start from. A Lead reads the article, splits the question into 2 to 4 tasks, and calls `research` once per task in the same turn, so the Researchers work in parallel: each one starts from a linked article and walks Wikipedia's links to find what its task needs. This is a fan-out: the Lead waits for every Researcher, reads their findings, and sends more Researchers if part of the question is still unanswered. Then a Writer, which sees only the question and the findings, writes a short report that cites the article behind every fact. `research` does what `researcher.as_tool()` would, written out so each Researcher gets its own column in the context panel. Copy `.env.example` to `.env` in this folder with your [Wikimedia Enterprise](https://enterprise.wikimedia.com/docs/#getting-api-keys) username and password, run `gcloud auth application-default login`, then `uv run app.py` and open http://localhost:8000.
+A deep-research agent that answers questions about NYC's overnight electricity use, and how much of it is avoidable lighting in empty commercial buildings, then draws the evidence on a map of the city at night.
+
+*Work in progress. The full README (target user, data sources, sample queries with and without tools) comes with the first deploy.*
+
+- Scope and data decisions: [`docs/planning/Project 2 Scope.md`](docs/planning/Project%202%20Scope.md)
+- Built on the course's `wikipedia-deep-research` starter (first commit) and Project 1's `/chat` response shape.
