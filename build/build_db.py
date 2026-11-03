@@ -112,8 +112,10 @@ TABLES = {
                   "and ESTIMATED overnight lighting (ComStock borough intensities x PLUTO floor area).",
                   {"est_lighting_base_mw": "estimated 1-5 a.m. interior lighting, baseline, MW (modeled allocation)",
                    "est_lighting_controls_mw": "same with the Lighting Controls retrofit",
-                   "commercial_share": "comarea / bldgarea"}),
-    "hex_nightlights": ("VIEW: mean good-quality radiance per hexagon and period, from nightlights.", {}),
+                   "commercial_share": "comarea / bldgarea",
+                   "zipcode": "most common ZIP code among the hexagon's tax lots",
+                   "community_district": "most common community district, e.g. 105 = Manhattan CD 5 (Midtown)"}),
+    "hex_nightlights": ("VIEW: mean radiance per hexagon and period, from nightlights. radiance_mean averages pixels of quality 0 (good) or 1 (poor: fewer cloud-free nights, common in monthly composites); gap-filled and fill pixels are excluded. Yearly composites are all quality 0. Treat a hexagon with usable_pixels < pixels / 2 as unreliable.", {}),
     "constants": ("Cited reference numbers (CO2 factors, household use, benchmarks). Cite the url column.", {}),
 }
 
@@ -297,13 +299,16 @@ def hex_tables(con, pluto: pd.DataFrame) -> set[str]:
     est = long.pivot_table(index="hex", columns="upgrade", values="mw", aggfunc="sum").rename(
         columns={0: "est_lighting_base_mw", 44: "est_lighting_controls_mw"})
 
+    mode = lambda s: s.mode().iat[0] if not s.mode().empty else None
     agg = p.groupby("hex").agg(
-        borough=("borough_name", lambda s: s.mode().iat[0] if not s.mode().empty else None),
+        borough=("borough_name", mode), zipcode=("zipcode", mode), community_district=("cd", mode),
         n_lots=("bbl", "size"), bldgarea_sqft=("bldgarea", "sum"), comarea_sqft=("comarea", "sum"),
         resarea_sqft=("resarea", "sum"), officearea_sqft=("officearea", "sum"), retailarea_sqft=("retailarea", "sum"))
     agg["commercial_share"] = np.where(agg["bldgarea_sqft"] > 0, agg["comarea_sqft"] / agg["bldgarea_sqft"], 0)
     cells = agg.join(est).fillna({"est_lighting_base_mw": 0, "est_lighting_controls_mw": 0}).reset_index()
     cells[["lat", "lon"]] = [h3.cell_to_latlng(h) for h in cells["hex"]]
+    for col in ["zipcode", "community_district"]:
+        cells[col] = cells[col].map(lambda v: None if pd.isna(v) else str(int(float(v))))
     con.execute("CREATE TABLE hex_cells AS SELECT * FROM cells ORDER BY est_lighting_base_mw DESC")
 
     features = [{"type": "Feature", "properties": {"hex": h},
@@ -350,8 +355,9 @@ def nightlights_table(con, nyc_hexes: set[str]) -> None:
     df = pd.DataFrame(rows, columns=["period", "product", "lat", "lon", "hex", "radiance", "quality"])
     con.execute("CREATE TABLE nightlights AS SELECT * FROM df ORDER BY period, hex")
     con.execute("""CREATE VIEW hex_nightlights AS
-        SELECT hex, period, product, avg(radiance) FILTER (WHERE quality = 0) AS radiance_mean,
-               count(*) FILTER (WHERE quality = 0) AS good_pixels, count(*) AS pixels
+        SELECT hex, period, product, avg(radiance) FILTER (WHERE quality IN (0, 1)) AS radiance_mean,
+               count(*) FILTER (WHERE quality = 0) AS good_pixels,
+               count(*) FILTER (WHERE quality IN (0, 1)) AS usable_pixels, count(*) AS pixels
         FROM nightlights GROUP BY ALL""")
 
 

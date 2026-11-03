@@ -191,6 +191,8 @@ One row per H3 resolution-8 hexagon in NYC: building floor area by use, commerci
 
 - `hex` VARCHAR
 - `borough` VARCHAR
+- `zipcode` VARCHAR: most common ZIP code among the hexagon's tax lots
+- `community_district` VARCHAR: most common community district, e.g. 105 = Manhattan CD 5 (Midtown)
 - `n_lots` BIGINT
 - `bldgarea_sqft` DOUBLE
 - `comarea_sqft` DOUBLE
@@ -205,13 +207,14 @@ One row per H3 resolution-8 hexagon in NYC: building floor area by use, commerci
 
 ## hex_nightlights (40,029 rows)
 
-VIEW: mean good-quality radiance per hexagon and period, from nightlights.
+VIEW: mean radiance per hexagon and period, from nightlights. radiance_mean averages pixels of quality 0 (good) or 1 (poor: fewer cloud-free nights, common in monthly composites); gap-filled and fill pixels are excluded. Yearly composites are all quality 0. Treat a hexagon with usable_pixels < pixels / 2 as unreliable.
 
 - `hex` VARCHAR
 - `period` VARCHAR
 - `product` VARCHAR
 - `radiance_mean` DOUBLE
 - `good_pixels` BIGINT
+- `usable_pixels` BIGINT
 - `pixels` BIGINT
 
 ## constants (10 rows)

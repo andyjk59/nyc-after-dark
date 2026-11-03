@@ -1,200 +1,363 @@
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Wikipedia Deep Research</title>
-        <style>
-            * {
-                box-sizing: border-box;
-                margin: 0;
-                padding: 0;
-            }
-            body {
-                font-family: system-ui, sans-serif;
-                padding: 2rem;
-                color: #111;
-            }
-            main {
-                max-width: 760px;
-                margin: 0 auto;
-                display: flex;
-                flex-direction: column;
-                gap: 1.5rem;
-            }
-            section {
-                border: 1px solid #e0e0e0;
-                padding: 1.25rem 1.5rem;
-            }
-            h1 {
-                font-size: 1rem;
-                font-weight: 600;
-            }
-            h2 {
-                font-size: 0.75rem;
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-                color: #999;
-                font-weight: 400;
-                margin-bottom: 0.75rem;
-                display: flex;
-                justify-content: space-between;
-                align-items: baseline;
-            }
-            #question,
-            #url {
-                width: 100%;
-                padding: 0.6rem 0;
-                border: none;
-                border-bottom: 1px solid #e0e0e0;
-                font-size: 1rem;
-                outline: none;
-            }
-            #question:focus,
-            #url:focus {
-                border-bottom-color: #000;
-            }
-            #task label {
-                display: block;
-                font-size: 0.75rem;
-                color: #999;
-            }
-            #task label + label {
-                margin-top: 1rem;
-            }
-            #run {
-                margin-top: 1rem;
-            }
-            button {
-                padding: 0.75rem 1.5rem;
-                background: #000;
-                color: #fff;
-                border: none;
-                font-size: 0.75rem;
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-                cursor: pointer;
-            }
-            button:disabled {
-                opacity: 0.3;
-            }
-            #activity {
-                list-style: none;
-                font-size: 0.85rem;
-                line-height: 1.7;
-            }
-            #activity .agent {
-                font-weight: 600;
-            }
-            #activity .error {
-                color: #dc2626;
-            }
-            #status {
-                color: #999;
-                text-transform: none;
-                letter-spacing: 0;
-            }
-            #output {
-                font-family: ui-monospace, monospace;
-                font-size: 0.8rem;
-                white-space: pre-wrap;
-                word-break: break-word;
-                line-height: 1.5;
-            }
-            .empty {
-                color: #999;
-            }
-        </style>
-    </head>
-    <body>
-        <main>
-            <h1>Deep research: a lead splits your question, researchers walk Wikipedia in parallel, and a writer turns their findings into a cited report</h1>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NYC After Dark</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+    :root {
+        --bg: #0d0f14; --panel: #151821; --raised: #1d212d; --line: #2a2f3d;
+        --text: #e6e6ea; --muted: #9096a6; --accent: #f5b544; --accent-dim: #8a5a12;
+        --user: #263049; --bad: #f87171;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+        background: var(--bg); color: var(--text);
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        display: grid; grid-template-columns: minmax(360px, 34rem) 1fr;
+    }
+    #side { display: flex; flex-direction: column; min-height: 0; height: 100vh; background: var(--panel); border-right: 1px solid var(--line); }
+    header { padding: 1.1rem 1.25rem 0.6rem; }
+    header h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.01em; }
+    header h1 span { color: var(--accent); }
+    header p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.9rem; }
+    #log { flex: 1; overflow-y: auto; padding: 0.5rem 1.25rem 1rem; }
+    .intro { background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 0.9rem 1rem; font-size: 0.9rem; }
+    .intro h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0.8rem 0 0.25rem; }
+    .intro h2:first-child { margin-top: 0; }
+    .intro p { margin: 0; }
+    .examples { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.4rem; }
+    .examples button {
+        text-align: left; background: transparent; color: var(--text); border: 1px solid var(--line);
+        border-radius: 8px; padding: 0.45rem 0.7rem; font: inherit; cursor: pointer;
+    }
+    .examples button:hover { border-color: var(--accent); }
+    .examples small { color: var(--muted); }
+    .msg { margin-top: 1rem; }
+    .msg.user { background: var(--user); border-radius: 10px; padding: 0.55rem 0.8rem; margin-left: 2.5rem; }
+    .msg.bot .body { overflow-wrap: anywhere; }
+    .msg.bot .body h1, .msg.bot .body h2, .msg.bot .body h3 { font-size: 1rem; margin: 1rem 0 0.3rem; }
+    .msg.bot .body p { margin: 0.5rem 0; }
+    .msg.bot .body ul { padding-left: 1.2rem; }
+    .msg.bot .body code { font-size: 0.78rem; color: var(--muted); }
+    .msg.bot .body hr { border: 0; border-top: 1px solid var(--line); margin: 1rem 0; }
+    .msg.bot .body table { border-collapse: collapse; font-size: 0.85rem; }
+    .msg.bot .body td, .msg.bot .body th { border: 1px solid var(--line); padding: 0.2rem 0.5rem; }
+    .cite { color: var(--accent); font-size: 0.8em; white-space: nowrap; }
+    .clarify { border-left: 3px solid var(--accent); padding-left: 0.7rem; }
+    .progress { font-size: 0.8rem; color: var(--muted); font-family: ui-monospace, monospace; }
+    .progress div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .progress div::before { content: "› "; color: var(--accent-dim); }
+    .spinner { display: inline-block; width: 0.7rem; height: 0.7rem; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -1px; margin-right: 0.4rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    details.work { margin-top: 0.6rem; font-size: 0.82rem; border: 1px solid var(--line); border-radius: 8px; padding: 0.4rem 0.7rem; }
+    details.work summary { cursor: pointer; color: var(--muted); }
+    .call { border-top: 1px solid var(--line); padding: 0.45rem 0; }
+    .call b { color: var(--accent); font-weight: 600; }
+    .call pre { margin: 0.25rem 0 0; white-space: pre-wrap; word-break: break-word; font-size: 0.75rem; color: var(--muted); max-height: 12rem; overflow: auto; }
+    .links { margin-top: 0.4rem; font-size: 0.8rem; }
+    .links a { color: var(--muted); }
+    form { display: flex; gap: 0.5rem; padding: 0.8rem 1.25rem 1rem; border-top: 1px solid var(--line); }
+    textarea {
+        flex: 1; resize: none; background: var(--raised); color: var(--text); border: 1px solid var(--line);
+        border-radius: 8px; padding: 0.55rem 0.7rem; font: inherit; height: 2.7rem;
+    }
+    textarea:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+    form button { background: var(--accent); color: #1a1205; border: 0; border-radius: 8px; padding: 0 1rem; font-weight: 600; cursor: pointer; }
+    form button:disabled { opacity: 0.5; cursor: wait; }
+    #mapwrap { position: relative; min-height: 0; }
+    #map { position: absolute; inset: 0; }
+    .overlay { position: absolute; background: rgba(21, 24, 33, 0.92); border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.8rem; font-size: 0.82rem; }
+    #controls { top: 0.8rem; left: 0.8rem; display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; max-width: calc(100% - 1.6rem); }
+    #controls select { background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 0.25rem 0.4rem; font: inherit; }
+    #legend { bottom: 1.8rem; left: 0.8rem; width: min(22rem, calc(100% - 1.6rem)); }
+    #legend .title { font-weight: 600; }
+    #legend .bar { height: 10px; border-radius: 3px; margin: 0.4rem 0 0.15rem; }
+    #legend .ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.75rem; }
+    #legend .caveat { color: var(--muted); font-size: 0.75rem; margin-top: 0.3rem; }
+    .maplibregl-popup-content { background: var(--panel); color: var(--text); border: 1px solid var(--line); font-size: 0.8rem; padding: 0.6rem 0.8rem; }
+    .maplibregl-popup-tip { border-top-color: var(--line) !important; border-bottom-color: var(--line) !important; }
+    .maplibregl-popup-close-button { color: var(--muted); }
+    .maplibregl-ctrl-attrib { background: rgba(13, 15, 20, 0.7) !important; }
+    .maplibregl-ctrl-attrib a { color: var(--muted) !important; }
+    @media (max-width: 800px) {
+        body { display: flex; flex-direction: column-reverse; height: auto; }
+        #side { height: auto; min-height: 60vh; border-right: 0; }
+        #mapwrap { height: 50vh; flex: none; }
+        #log { overflow: visible; }
+        header, #log, form { padding-left: 16px; padding-right: 16px; }
+    }
+</style>
+</head>
+<body>
+<section id="side">
+    <header>
+        <h1>NYC <span>After Dark</span></h1>
+        <p>How much electricity does New York use, and waste, between 1 and 5 a.m.?</p>
+    </header>
+    <div id="log">
+        <div class="intro">
+            <h2>What this explores</h2>
+            <p>New York City's overnight electricity: measured hourly grid load and prices (NYISO, 2016 to yesterday),
+            modeled commercial lighting by building type (NREL ComStock), building floor area and metered energy
+            (PLUTO, LL84), and satellite night lights (NASA Black Marble, 2013–2026). A team of AI researchers
+            queries this data with SQL, cites every number, and draws the result on the map.</p>
+            <h2>Who it's for</h2>
+            <p>Students, journalists, City Council staff and anyone weighing lights-out rules or lighting retrofits
+            who needs a number with its source, not a guess.</p>
+            <h2>How to use it</h2>
+            <p>Ask a question, or start with one below. Answers take 1–3 minutes. Each number links to the query
+            that produced it; open "How I got this" to see every query. Click a hexagon on the map for its details.</p>
+            <div class="examples">
+                <button data-q="How much electricity does commercial lighting use in NYC between 1 and 5 a.m., and how much of that could lighting controls or a lights-out rule avoid?">How much overnight lighting could NYC avoid?<br><small>modeled lighting, retrofit vs lights-out</small></button>
+                <button data-q="Did NYC's overnight electricity use and night-time brightness drop during the April 2020 shutdown compared with April 2019?">Did the city go dark in the 2020 shutdown?<br><small>grid load and satellite, 2019 vs 2020</small></button>
+                <button data-q="Which neighborhoods have the most commercial lighting on overnight, and are they also the brightest from space?">Where are the lights left on?<br><small>map of modeled lighting vs satellite</small></button>
+                <button data-q="How much energy is wasted in NYC overnight?">How much energy is wasted overnight?<br><small>a broad question: it will ask what you mean</small></button>
+            </div>
+        </div>
+    </div>
+    <form id="ask">
+        <textarea id="q" placeholder="Ask about NYC's overnight energy…" aria-label="Your question" required></textarea>
+        <button id="send">Ask</button>
+    </form>
+</section>
+<section id="mapwrap">
+    <div id="map"></div>
+    <div id="controls" class="overlay">
+        <select id="layer" aria-label="Map layer">
+            <option value="est_overnight_lighting">Modeled overnight lighting</option>
+            <option value="night_lights">Satellite brightness</option>
+            <option value="night_lights_change">Change in brightness</option>
+            <option value="commercial_share">Commercial share of floor area</option>
+        </select>
+        <label id="periodbox" hidden><select id="period" aria-label="Period"></select></label>
+        <label id="comparebox" hidden>vs <select id="compare" aria-label="Compare with"></select></label>
+    </div>
+    <div id="legend" class="overlay"></div>
+</section>
 
-            <section>
-                <h2>Task</h2>
-                <form id="task">
-                    <label>Question
-                        <input id="question" value="How did the Apollo program's computers influence later computing?" placeholder="What do you want to know?" autocomplete="off" />
-                    </label>
-                    <label>Starting article
-                        <input id="url" value="https://en.wikipedia.org/wiki/Apollo_program" placeholder="A Wikipedia URL, e.g. https://en.wikipedia.org/wiki/Apollo_program" autocomplete="off" />
-                    </label>
-                    <button id="run" type="submit">Run</button>
-                </form>
-            </section>
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $("log");
+let sessionId = null;
+let periods = [];
+let hexData = null;
+let layerUnit = "";
 
-            <section>
-                <h2>Activity <span id="status"></span></h2>
-                <ol id="activity"><li class="empty">Each agent's steps appear here.</li></ol>
-            </section>
+// --- Chat ---
 
-            <section>
-                <h2>Output</h2>
-                <div id="output" class="empty">The report's markdown appears here.</div>
-            </section>
-        </main>
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
 
-        <script src="/context-panel.js"></script>
-        <script>
-            const $ = (id) => document.getElementById(id);
-            let source = null;
-            let runId = null;
+function renderMarkdown(text) {
+    const html = DOMPurify.sanitize(marked.parse(text));
+    return html.replace(/\[(Q\d+(?:\s*,\s*Q\d+)*)\]/g, '<span class="cite">[$1]</span>');
+}
 
-            function addActivity(agent, text, cls = "") {
-                const li = document.createElement("li");
-                li.className = cls;
-                if (agent) {
-                    const name = document.createElement("span");
-                    name.className = "agent";
-                    name.textContent = agent + " ";
-                    li.appendChild(name);
-                }
-                li.append(text);
-                $("activity").appendChild(li);
+function addMessage(cls, html) {
+    const div = document.createElement("div");
+    div.className = "msg " + cls;
+    div.innerHTML = html;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    return div;
+}
+
+function describeCall(call) {
+    const args = call.args || {};
+    let what = args.sql ?? args.task ?? (args.day ? "day " + args.day : JSON.stringify(args));
+    return `<div class="call"><b>${escapeHtml(call.agent)}</b> · ${escapeHtml(call.name)}
+        <pre>${escapeHtml(what)}</pre>
+        ${call.name === "run_sql" || call.name === "fetch_latest_nyiso" ? `<pre>${escapeHtml(call.result.slice(0, 1500))}</pre>` : ""}</div>`;
+}
+
+function ask(question) {
+    $("send").disabled = true;
+    log.querySelector(".intro")?.remove();
+    addMessage("user", escapeHtml(question));
+    const bot = addMessage("bot", '<div class="progress"><div><span class="spinner"></span>Planning the research…</div></div>');
+    const progress = bot.querySelector(".progress");
+    const params = new URLSearchParams({ message: question });
+    if (sessionId) params.set("session_id", sessionId);
+    const source = new EventSource("/run?" + params);
+    const started = Date.now();
+
+    source.onmessage = (e) => {
+        const event = JSON.parse(e.data);
+        if (event.type === "start") sessionId = event.session_id;
+        if (event.type === "tool") {
+            const a = event.args || {};
+            const detail = a.sql ? a.sql.replace(/\s+/g, " ") : a.task ?? a.title ?? a.day ?? "";
+            const line = document.createElement("div");
+            line.textContent = `${event.agent} · ${event.name}${detail ? ": " + detail : ""}`;
+            progress.appendChild(line);
+            log.scrollTop = log.scrollHeight;
+        }
+        if (event.type === "activity" && event.text === "started" && event.agent !== "Lead") {
+            const line = document.createElement("div");
+            line.textContent = `${event.agent} started`;
+            progress.appendChild(line);
+        }
+        if (event.type === "map") showLayer(event.map);
+        if (event.type === "done") {
+            source.close();
+            sessionId = event.session_id;
+            const seconds = Math.round((Date.now() - started) / 1000);
+            const research = event.tool_calls.filter((c) => c.name !== "show_on_map");
+            const clarify = event.tool_calls.length === 0;
+            bot.innerHTML = `<div class="body ${clarify ? "clarify" : ""}">${renderMarkdown(event.response)}</div>` +
+                (research.length ? `<details class="work"><summary>How I got this: ${research.length} tool calls, ${seconds} s</summary>
+                    ${event.tool_calls.map(describeCall).join("")}</details>` : "") +
+                (research.length ? `<div class="links"><a href="/trace?run=${event.run_id}" target="_blank">Agent timeline: every agent's context</a></div>` : "");
+            if (event.map) showLayer(event.map);
+            $("send").disabled = false;
+            log.scrollTop = bot.offsetTop - 60;
+        }
+    };
+    source.onerror = () => {
+        // EventSource would reconnect and ask again: stop it.
+        source.close();
+        bot.innerHTML = '<div class="body" style="color:var(--bad)">The connection dropped before the answer arrived. Try again.</div>';
+        $("send").disabled = false;
+    };
+}
+
+$("ask").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = $("q").value.trim();
+    if (!q || $("send").disabled) return;
+    $("q").value = "";
+    ask(q);
+});
+$("q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask").requestSubmit(); }
+});
+document.querySelectorAll(".examples button").forEach((b) => b.addEventListener("click", () => ask(b.dataset.q)));
+
+// --- Map ---
+
+const GLOW = ["#2a1a0a", "#5c3307", "#9a5a0c", "#d98b16", "#f5b544", "#ffd98a", "#fff4d6"];
+const DIVERGING = { low: "#4f8cf7", mid: "#3a3d4a", high: "#f5a524" };
+
+const map = new maplibregl.Map({
+    container: "map",
+    style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+    bounds: [[-74.26, 40.49], [-73.70, 40.92]], fitBoundsOptions: { padding: 20 }, minZoom: 8, maxZoom: 15,
+    attributionControl: { compact: true },
+});
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+
+function quantiles(values, n) {
+    const sorted = [...values].sort((a, b) => a - b);
+    const stops = [];
+    for (let i = 0; i < n; i++) stops.push(sorted[Math.min(sorted.length - 1, Math.floor((i / (n - 1)) * (sorted.length - 1)))]);
+    // interpolate needs strictly increasing stops
+    for (let i = 1; i < stops.length; i++) if (stops[i] <= stops[i - 1]) stops[i] = stops[i - 1] + 1e-6;
+    return stops;
+}
+
+const fmt = (v) => Math.abs(v) >= 100 ? Math.round(v).toLocaleString() : Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1);
+
+async function showLayer(spec) {
+    $("layer").value = spec.layer;
+    syncPeriodControls(spec);
+    const params = new URLSearchParams({ layer: spec.layer });
+    if (spec.period) params.set("period", spec.period);
+    if (spec.compare_to) params.set("compare_to", spec.compare_to);
+    const res = await fetch("/map_layer?" + params);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!hexData) return;
+    layerUnit = data.unit;
+    hexData.features.forEach((f) => { f.properties.v = data.values[f.properties.hex] ?? null; });
+    map.getSource("hex").setData(hexData);
+
+    let color, ticks, bar;
+    if (data.diverging) {
+        color = ["interpolate", ["linear"], ["get", "v"], -50, DIVERGING.low, 0, DIVERGING.mid, 50, DIVERGING.high];
+        bar = `linear-gradient(90deg, ${DIVERGING.low}, ${DIVERGING.mid}, ${DIVERGING.high})`;
+        ticks = ["−50% or darker", "no change", "+50% or brighter"];
+    } else {
+        const stops = quantiles(Object.values(data.values), GLOW.length);
+        color = ["interpolate", ["linear"], ["get", "v"], ...stops.flatMap((s, i) => [s, GLOW[i]])];
+        bar = `linear-gradient(90deg, ${GLOW.join(", ")})`;
+        ticks = [fmt(stops[0]), fmt(stops[3]), fmt(stops[GLOW.length - 1]) + " " + data.unit];
+    }
+    map.setPaintProperty("hex-fill", "fill-color", ["case", ["==", ["get", "v"], null], "rgba(0,0,0,0)", color]);
+    $("legend").innerHTML = `<div class="title">${escapeHtml(spec.title || data.label)}</div>
+        <div class="bar" style="background:${bar}"></div>
+        <div class="ticks">${ticks.map((t) => `<span>${escapeHtml(t)}</span>`).join("")}</div>
+        <div class="caveat">${escapeHtml(data.caveat)}${data.diverging ? "" : " Colors are quantiles: each shade covers about the same number of hexagons."}</div>`;
+}
+
+function syncPeriodControls(spec) {
+    const needsPeriod = spec.layer.startsWith("night_lights");
+    $("periodbox").hidden = !needsPeriod;
+    $("comparebox").hidden = spec.layer !== "night_lights_change";
+    if (needsPeriod) {
+        $("period").value = spec.period;
+        const sameKind = periods.filter((p) => p.length === spec.period.length && p < spec.period);
+        $("compare").innerHTML = sameKind.map((p) => `<option>${p}</option>`).join("");
+        if (spec.compare_to) $("compare").value = spec.compare_to;
+    }
+}
+
+function fromControls() {
+    const layer = $("layer").value;
+    const spec = { layer };
+    if (layer.startsWith("night_lights")) {
+        spec.period = $("period").value || "2025";
+        if (layer === "night_lights_change") {
+            let earlier = periods.filter((p) => p.length === spec.period.length && p < spec.period);
+            if (!earlier.length) {
+                spec.period = "2025";
+                earlier = periods.filter((p) => p.length === 4 && p < "2025");
             }
+            // Keep the chosen comparison if it still fits, else the same period a year earlier
+            const yearBefore = String(+spec.period.slice(0, 4) - 1) + spec.period.slice(4);
+            const chosen = $("comparebox").hidden ? null : $("compare").value;
+            spec.compare_to = earlier.includes(chosen) ? chosen : earlier.includes(yearBefore) ? yearBefore : earlier[0];
+        }
+    }
+    showLayer(spec);
+}
+["layer", "period", "compare"].forEach((id) => $(id).addEventListener("change", fromControls));
 
-            function showOutput(markdown) {
-                $("output").className = "";
-                $("output").textContent = markdown;
-            }
+map.on("load", async () => {
+    const [grid, meta] = await Promise.all([fetch("/hex_grid.geojson").then((r) => r.json()), fetch("/meta").then((r) => r.json())]);
+    hexData = grid;
+    periods = meta.periods;
+    $("period").innerHTML = periods.map((p) => `<option>${p}</option>`).join("");
+    const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+    map.addSource("hex", { type: "geojson", data: hexData });
+    map.addLayer({ id: "hex-fill", type: "fill", source: "hex", paint: { "fill-color": "rgba(0,0,0,0)", "fill-opacity": 0.78 } }, firstLabel);
+    map.addLayer({ id: "hex-line", type: "line", source: "hex", paint: { "line-color": "#000", "line-opacity": 0.25, "line-width": 0.5 } }, firstLabel);
+    showLayer({ layer: "est_overnight_lighting" });
 
-            function finish(message) {
-                $("status").textContent = message;
-                $("run").disabled = false;
-                source.close();
-            }
-
-            $("task").addEventListener("submit", (e) => {
-                e.preventDefault();
-                if (source) source.close();
-                const params = new URLSearchParams({ question: $("question").value.trim(), url: $("url").value.trim() });
-
-                $("activity").replaceChildren();
-                $("output").className = "empty";
-                $("output").textContent = "The report's markdown appears here.";
-                $("status").textContent = "running";
-                $("run").disabled = true;
-                resetContext();
-
-                source = new EventSource("/run?" + params);
-                source.onmessage = (msg) => {
-                    const event = JSON.parse(msg.data);
-                    if (event.type === "start") runId = event.run_id;
-                    else if (event.type === "context") showContext(runId);
-                    else if (event.type === "activity") addActivity(event.agent, event.text);
-                    else if (event.type === "done") {
-                        showOutput(event.markdown);
-                        finish("done");
-                    } else if (event.type === "error") {
-                        addActivity("", event.message, "error");
-                        finish("failed");
-                    }
-                };
-                source.onerror = () => {
-                    addActivity("", "Lost the connection to the server.", "error");
-                    finish("failed");
-                };
-            });
-        </script>
-    </body>
+    map.on("mousemove", "hex-fill", () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", "hex-fill", () => { map.getCanvas().style.cursor = ""; });
+    map.on("click", "hex-fill", async (e) => {
+        const f = e.features[0];
+        const res = await fetch("/hex_info?hex=" + f.properties.hex);
+        if (!res.ok) return;
+        const h = await res.json();
+        const v = f.properties.v;
+        const millions = (x) => (x / 1e6).toFixed(1) + "M sq ft";
+        new maplibregl.Popup({ maxWidth: "260px" }).setLngLat(e.lngLat).setHTML(`
+            <b>${escapeHtml(h.borough ?? "")}</b> · ZIP ${escapeHtml(h.zipcode ?? "n/a")} · ${h.n_lots.toLocaleString()} tax lots<br>
+            Floor area: ${millions(h.bldgarea_sqft)} (${Math.round(h.commercial_share * 100)}% commercial)<br>
+            Modeled 1–5 a.m. lighting: ${Math.round(h.est_lighting_base_mw * 1000).toLocaleString()} kW
+            (${Math.round(h.est_lighting_controls_mw * 1000).toLocaleString()} kW with controls)<br>
+            Satellite brightness 2025: ${h.radiance_2025 != null ? h.radiance_2025.toFixed(0) + " nW/cm²/sr" : "n/a"}
+            ${v != null && $("layer").value !== "est_overnight_lighting" ? `<br>This layer: ${fmt(v)} ${escapeHtml(layerUnit)}` : ""}`).addTo(map);
+    });
+});
+</script>
+</body>
 </html>

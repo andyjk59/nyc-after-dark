@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Timeline</title>
+<style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #fafafa; }
+    header { padding: 1rem 1.5rem 0; }
+    header p { color: #666; margin: 0.25rem 0 0; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<header>
+    <h1 style="font-size:1.2rem;margin:0">Agent timeline</h1>
+    <p>One column per agent, one row per message, exactly as each model saw it. Researchers start fresh
+    contexts: they see only their task, never the Lead's conversation.</p>
+</header>
+<script src="/context-panel.js"></script>
+<script>
+    // The panel normally sits on the right of a chat page; here it is the whole page.
+    const style = document.createElement("style");
+    style.textContent = `body { margin-right: 0 !important; }
+        #context-panel { position: static !important; width: auto !important; border: 0 !important; height: calc(100vh - 6rem); }`;
+    document.head.appendChild(style);
+    showContext(new URLSearchParams(location.search).get("run"));
+</script>
+</body>
+</html>
