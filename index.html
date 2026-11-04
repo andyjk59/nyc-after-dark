@@ -404,7 +404,9 @@ async function hexPopup(lngLat, hex, heading) {
 }
 
 // Start downloading while the basemap loads
-const gridReady = Promise.all([fetch("/hex_grid.geojson").then((r) => r.json()), fetch("/meta").then((r) => r.json())]);
+// cache: "no-cache" checks with the server every time: a grid cached from an older build has other hexagon ids
+const gridReady = Promise.all([fetch("/hex_grid.geojson", { cache: "no-cache" }).then((r) => r.json()),
+                               fetch("/meta").then((r) => r.json())]);
 
 // style.load, not load: draw the hexagons without waiting for every basemap tile
 map.once("style.load", async () => {
