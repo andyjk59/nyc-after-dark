@@ -24,7 +24,8 @@ from pandas.tseries.holiday import USFederalHolidayCalendar
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
 DB_PATH = ROOT / "data" / "nyc_overnight.duckdb"
-HEX_RES = 8  # ~0.74 km2 per hexagon
+HEX_RES = 9  # ~0.1 km2, ~350 m across
+COVER_RES = 8  # map coverage: every res-9 child of a res-8 cell that has a tax lot, so parks leave no holes
 NYC_BBOX = {"lat": (40.47, 40.93), "lon": (-74.28, -73.68)}
 
 BOROUGHS = pd.DataFrame({
@@ -97,7 +98,7 @@ TABLES = {
     "type_crosswalk": ("How PLUTO floor area is matched to ComStock building types to spread modeled lighting across the map. "
                        "Restaurants, groceries, factories, museums, labs, data centers and colleges have no match.", {}),
     "pluto": ("MapPLUTO (release in the version column): one row per tax lot with floor area by use, building class and "
-              "location. hex is the H3 resolution-8 hexagon containing the lot.", {}),
+              "location. hex is the H3 resolution-9 hexagon (~350 m across) containing the lot.", {}),
     "ll84": ("LL84 benchmarking, annual (report years 2022-2024): METERED electricity reported by buildings of 25,000+ sq ft "
              "(private) or 10,000+ sq ft (city-owned). Self-reported; outliers exist. Annual only, no hourly data.",
              {"electricity_kwh": "grid electricity purchased in the year, kWh",
@@ -108,14 +109,21 @@ TABLES = {
                     {"period": "'2013'..'2025' (annual, VNP46A4) or 'YYYY-MM' (monthly, VNP46A3)",
                      "radiance": "near-nadir snow-free composite, nW/cm2/sr",
                      "quality": "0 = good (more than 3 observations), 1 = poor, 2 = gap-filled"}),
-    "hex_cells": ("One row per H3 resolution-8 hexagon in NYC: building floor area by use, commercial share, "
+    "hex_cells": ("One row per H3 resolution-9 hexagon (~350 m across) in NYC, including parks and other hexagons with no tax lots (n_lots = 0): building floor area by use, commercial share, "
                   "and ESTIMATED overnight lighting (ComStock borough intensities x PLUTO floor area).",
                   {"est_lighting_base_mw": "estimated 1-5 a.m. interior lighting, baseline, MW (modeled allocation)",
                    "est_lighting_controls_mw": "same with the Lighting Controls retrofit",
                    "commercial_share": "comarea / bldgarea",
                    "zipcode": "most common ZIP code among the hexagon's tax lots",
                    "community_district": "most common community district, e.g. 105 = Manhattan CD 5 (Midtown)"}),
-    "hex_nightlights": ("VIEW: mean radiance per hexagon and period, from nightlights. radiance_mean averages pixels of quality 0 (good) or 1 (poor: fewer cloud-free nights, common in monthly composites); gap-filled and fill pixels are excluded. Yearly composites are all quality 0. Treat a hexagon with usable_pixels < pixels / 2 as unreliable.", {}),
+    "hex_nightlights": ("Satellite radiance per hexagon and period. Satellite pixels (~460 m) are larger than hexagons, so radiance_mean is interpolated (bilinear) from the 4 pixels around the hexagon's center, using only pixels of quality 0 (good) or 1 (poor: fewer cloud-free nights, common in monthly composites). Yearly composites are all quality 0. Neighboring hexagons share pixels: count hexagons as area, not as independent samples. Treat a hexagon with usable_pixels < pixels / 2 as unreliable.",
+                        {"radiance_mean": "nW/cm2/sr, NULL if none of the 4 pixels is usable",
+                         "good_pixels": "of the 4 pixels, how many are quality 0",
+                         "usable_pixels": "of the 4 pixels, how many are quality 0 or 1", "pixels": "always 4"}),
+    "places": ("Hand-placed label points for boroughs, neighborhoods, parks and landmarks (approximate centers, from build/places.json). "
+               "hex is the hexagon containing the point: JOIN hex_cells or hex_nightlights USING (hex) to see a landmark's surroundings. "
+               "A neighborhood's point is its center, not its extent.",
+               {"kind": "borough | neighborhood | park | tower | signage | transit | airport | campus | hospital | venue | industrial | power plant | monument"}),
     "constants": ("Cited reference numbers (CO2 factors, household use, benchmarks). Cite the url column.", {}),
 }
 
@@ -304,6 +312,12 @@ def hex_tables(con, pluto: pd.DataFrame) -> set[str]:
         borough=("borough_name", mode), zipcode=("zipcode", mode), community_district=("cd", mode),
         n_lots=("bbl", "size"), bldgarea_sqft=("bldgarea", "sum"), comarea_sqft=("comarea", "sum"),
         resarea_sqft=("resarea", "sum"), officearea_sqft=("officearea", "sum"), retailarea_sqft=("retailarea", "sum"))
+    parents = p.groupby(p["hex"].map(lambda h: h3.cell_to_parent(h, COVER_RES)))["borough_name"].agg(mode)
+    cover = pd.Series({c: b for parent, b in parents.items() for c in h3.cell_to_children(parent, HEX_RES)}, name="cover_borough")
+    agg = agg.reindex(cover.index).rename_axis("hex")
+    agg["borough"] = agg["borough"].fillna(cover)
+    agg = agg.fillna({c: 0 for c in ["n_lots", "bldgarea_sqft", "comarea_sqft", "resarea_sqft", "officearea_sqft", "retailarea_sqft"]})
+    agg["n_lots"] = agg["n_lots"].astype(int)
     agg["commercial_share"] = np.where(agg["bldgarea_sqft"] > 0, agg["comarea_sqft"] / agg["bldgarea_sqft"], 0)
     cells = agg.join(est).fillna({"est_lighting_base_mw": 0, "est_lighting_controls_mw": 0}).reset_index()
     cells[["lat", "lon"]] = [h3.cell_to_latlng(h) for h in cells["hex"]]
@@ -317,7 +331,7 @@ def hex_tables(con, pluto: pd.DataFrame) -> set[str]:
                                                list(h3.cell_to_boundary(h)) + [h3.cell_to_boundary(h)[0]]]]}}
                 for h in cells["hex"]]
     (ROOT / "data" / "hex_grid.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": features}))
-    return set(cells["hex"])
+    return list(cells["hex"])
 
 
 # --- Black Marble ---
@@ -332,8 +346,10 @@ def read_layer(h5: h5py.File, name: str) -> np.ndarray:
     return data
 
 
-def nightlights_table(con, nyc_hexes: set[str]) -> None:
-    rows = []
+def nightlights_table(con, nyc_hexes: list[str]) -> None:
+    hex_set = set(nyc_hexes)
+    centers = np.array([h3.cell_to_latlng(h) for h in nyc_hexes])
+    pixel_rows, hex_frames = [], []
     for path in sorted((RAW / "blackmarble").glob("VNP46A*/*.h5")):
         product = path.name.split(".")[0]
         year, doy = int(path.name.split(".")[1][1:5]), int(path.name.split(".")[1][5:8])
@@ -345,20 +361,50 @@ def nightlights_table(con, nyc_hexes: set[str]) -> None:
             c = np.where((lon >= NYC_BBOX["lon"][0]) & (lon <= NYC_BBOX["lon"][1]))[0]
             rad = read_layer(h, "NearNadir_Composite_Snow_Free")[np.ix_(r, c)]
             qual = h["HDFEOS/GRIDS/VIIRS_Grid_DNB_2d/Data Fields/NearNadir_Composite_Snow_Free_Quality"][()][np.ix_(r, c)]
-        for i, la in enumerate(lat[r]):
-            for j, lo in enumerate(lon[c]):
+        lat_r, lon_c = lat[r], lon[c]
+        for i, la in enumerate(lat_r):
+            for j, lo in enumerate(lon_c):
                 cell = h3.latlng_to_cell(float(la), float(lo), HEX_RES)
-                if cell in nyc_hexes:
-                    rows.append((period, product, float(la), float(lo), cell,
-                                 None if np.isnan(rad[i, j]) else float(rad[i, j]), int(qual[i, j])))
+                if cell in hex_set:
+                    pixel_rows.append((period, product, float(la), float(lo), cell,
+                                       None if np.isnan(rad[i, j]) else float(rad[i, j]), int(qual[i, j])))
+
+        # Each hexagon: bilinear interpolation between the 4 pixel centers around its center, usable pixels only
+        fi = (centers[:, 0] - lat_r[0]) / (lat_r[1] - lat_r[0])
+        fj = (centers[:, 1] - lon_c[0]) / (lon_c[1] - lon_c[0])
+        i0 = np.clip(np.floor(fi).astype(int), 0, len(lat_r) - 2)
+        j0 = np.clip(np.floor(fj).astype(int), 0, len(lon_c) - 2)
+        wi, wj = np.clip(fi - i0, 0, 1), np.clip(fj - j0, 0, 1)
+        corners = [(i0, j0, (1 - wi) * (1 - wj)), (i0, j0 + 1, (1 - wi) * wj),
+                   (i0 + 1, j0, wi * (1 - wj)), (i0 + 1, j0 + 1, wi * wj)]
+        vals = np.stack([rad[a, b] for a, b, _ in corners])
+        q = np.stack([qual[a, b] for a, b, _ in corners])
+        ok = np.isin(q, (0, 1)) & ~np.isnan(vals)
+        w = np.stack([wt for _, _, wt in corners]) * ok
+        v0 = np.where(ok, vals, 0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            interp = (w * v0).sum(0) / w.sum(0)
+            plain = v0.sum(0) / ok.sum(0)  # a hexagon centered on usable pixels whose weights are all ~0
+        radiance = np.where(w.sum(0) > 1e-9, interp, plain)
+        hex_frames.append(pd.DataFrame({
+            "hex": nyc_hexes, "period": period, "product": product,
+            "radiance_mean": np.where(ok.any(0), radiance, np.nan),
+            "good_pixels": (q == 0).sum(0), "usable_pixels": ok.sum(0), "pixels": 4}))
         print(f"  nightlights {period}: {len(r)}x{len(c)} pixels", flush=True)
-    df = pd.DataFrame(rows, columns=["period", "product", "lat", "lon", "hex", "radiance", "quality"])
+    df = pd.DataFrame(pixel_rows, columns=["period", "product", "lat", "lon", "hex", "radiance", "quality"])
     con.execute("CREATE TABLE nightlights AS SELECT * FROM df ORDER BY period, hex")
-    con.execute("""CREATE VIEW hex_nightlights AS
-        SELECT hex, period, product, avg(radiance) FILTER (WHERE quality IN (0, 1)) AS radiance_mean,
-               count(*) FILTER (WHERE quality = 0) AS good_pixels,
-               count(*) FILTER (WHERE quality IN (0, 1)) AS usable_pixels, count(*) AS pixels
-        FROM nightlights GROUP BY ALL""")
+    hexes = pd.concat(hex_frames, ignore_index=True)
+    con.execute("CREATE TABLE hex_nightlights AS SELECT * FROM hexes ORDER BY period, hex")
+
+
+def places_table(con) -> None:
+    src = json.loads((ROOT / "build" / "places.json").read_text())
+    rows = [(name, kind, la, lo) for kind in ("borough", "neighborhood", "park")
+            for name, la, lo in src[kind + "s"]]
+    rows += [(name, kind, la, lo) for name, kind, la, lo in src["landmarks"]]
+    df = pd.DataFrame(rows, columns=["name", "kind", "lat", "lon"])
+    df["hex"] = [h3.latlng_to_cell(la, lo, HEX_RES) for la, lo in zip(df["lat"], df["lon"])]
+    con.execute("CREATE TABLE places AS SELECT * FROM df")
 
 
 # --- Constants, schema doc ---
@@ -398,6 +444,7 @@ def main() -> None:
     hexes = hex_tables(con, pluto)
     print("building nightlights...", flush=True)
     nightlights_table(con, hexes)
+    places_table(con)
     constants_table(con)
     write_schema(con)
     con.execute("CHECKPOINT")

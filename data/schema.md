@@ -109,7 +109,7 @@ How PLUTO floor area is matched to ComStock building types to spread modeled lig
 
 ## pluto (857,347 rows)
 
-MapPLUTO (release in the version column): one row per tax lot with floor area by use, building class and location. hex is the H3 resolution-8 hexagon containing the lot.
+MapPLUTO (release in the version column): one row per tax lot with floor area by use, building class and location. hex is the H3 resolution-9 hexagon (~350 m across) containing the lot.
 
 - `bbl` VARCHAR
 - `borough` VARCHAR
@@ -173,7 +173,7 @@ LL84 benchmarking, annual (report years 2022-2024): METERED electricity reported
 - `elec_kwh_per_sqft` DOUBLE: electricity_kwh / gfa_sqft
 - `hex` VARCHAR
 
-## nightlights (182,028 rows)
+## nightlights (183,117 rows)
 
 NASA Black Marble (VIIRS) nighttime radiance per ~500 m pixel over NYC. MEASURED brightness at ~1:30 a.m. solar time; includes streets, signs and homes, not just buildings. Not energy.
 
@@ -185,9 +185,9 @@ NASA Black Marble (VIIRS) nighttime radiance per ~500 m pixel over NYC. MEASURED
 - `radiance` DOUBLE: near-nadir snow-free composite, nW/cm2/sr
 - `quality` BIGINT: 0 = good (more than 3 observations), 1 = poor, 2 = gap-filled
 
-## hex_cells (1,213 rows)
+## hex_cells (8,554 rows)
 
-One row per H3 resolution-8 hexagon in NYC: building floor area by use, commercial share, and ESTIMATED overnight lighting (ComStock borough intensities x PLUTO floor area).
+One row per H3 resolution-9 hexagon (~350 m across) in NYC, including parks and other hexagons with no tax lots (n_lots = 0): building floor area by use, commercial share, and ESTIMATED overnight lighting (ComStock borough intensities x PLUTO floor area).
 
 - `hex` VARCHAR
 - `borough` VARCHAR
@@ -205,17 +205,27 @@ One row per H3 resolution-8 hexagon in NYC: building floor area by use, commerci
 - `lat` DOUBLE
 - `lon` DOUBLE
 
-## hex_nightlights (40,029 rows)
+## hex_nightlights (282,282 rows)
 
-VIEW: mean radiance per hexagon and period, from nightlights. radiance_mean averages pixels of quality 0 (good) or 1 (poor: fewer cloud-free nights, common in monthly composites); gap-filled and fill pixels are excluded. Yearly composites are all quality 0. Treat a hexagon with usable_pixels < pixels / 2 as unreliable.
+Satellite radiance per hexagon and period. Satellite pixels (~460 m) are larger than hexagons, so radiance_mean is interpolated (bilinear) from the 4 pixels around the hexagon's center, using only pixels of quality 0 (good) or 1 (poor: fewer cloud-free nights, common in monthly composites). Yearly composites are all quality 0. Neighboring hexagons share pixels: count hexagons as area, not as independent samples. Treat a hexagon with usable_pixels < pixels / 2 as unreliable.
 
 - `hex` VARCHAR
 - `period` VARCHAR
 - `product` VARCHAR
-- `radiance_mean` DOUBLE
-- `good_pixels` BIGINT
-- `usable_pixels` BIGINT
-- `pixels` BIGINT
+- `radiance_mean` DOUBLE: nW/cm2/sr, NULL if none of the 4 pixels is usable
+- `good_pixels` BIGINT: of the 4 pixels, how many are quality 0
+- `usable_pixels` BIGINT: of the 4 pixels, how many are quality 0 or 1
+- `pixels` BIGINT: always 4
+
+## places (89 rows)
+
+Hand-placed label points for boroughs, neighborhoods, parks and landmarks (approximate centers, from build/places.json). hex is the hexagon containing the point: JOIN hex_cells or hex_nightlights USING (hex) to see a landmark's surroundings. A neighborhood's point is its center, not its extent.
+
+- `name` VARCHAR
+- `kind` VARCHAR: borough | neighborhood | park | tower | signage | transit | airport | campus | hospital | venue | industrial | power plant | monument
+- `lat` DOUBLE
+- `lon` DOUBLE
+- `hex` VARCHAR
 
 ## constants (10 rows)
 

@@ -14,6 +14,7 @@ from agents import Agent, ModelSettings, RunContextWrapper, RunHooks, Runner, fu
 from agents.extensions.models.litellm_model import LitellmModel
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -176,7 +177,8 @@ Facts about the data:
 - MW averaged over the 4 overnight hours x 4 x 365 / 1000 = GWh per year for those hours.
 - The newest grid hour in the database is {latest}. For anything newer, use fetch_latest_nyiso.
 - Compare Black Marble periods like with like: a year with a year, a month with the same month.
-- Identify places by borough, ZIP code or community district from the data (hex_cells has them).
+- Identify places by borough, ZIP code or community district from the data (hex_cells has them), or by
+  the places table's landmarks and neighborhoods (JOIN places USING (hex)).
 """.format(retained=LIGHTS_OUT_RETAINED, latest=LATEST_HOUR)
 
 RESEARCHERS = {
@@ -188,10 +190,10 @@ RESEARCHERS = {
                  ["comstock_hourly", "comstock_annual", "type_crosswalk", "constants"], [run_sql]),
     "buildings": ("tax-lot floor area by use (PLUTO), metered annual electricity per building (LL84), and "
                   "the map's hexagons with estimated lighting",
-                  ["pluto", "ll84", "hex_cells", "constants"], [run_sql]),
+                  ["pluto", "ll84", "hex_cells", "places", "constants"], [run_sql]),
     "nightlights": ("satellite nighttime brightness per hexagon, yearly 2013-2025 and monthly for spring "
                     "2019, spring 2020 and Oct 2025-Sep 2026 (NASA Black Marble)",
-                    ["nightlights", "hex_nightlights", "hex_cells"], [run_sql]),
+                    ["nightlights", "hex_nightlights", "hex_cells", "places"], [run_sql]),
 }
 
 
@@ -367,6 +369,7 @@ sessions: dict[str, dict] = {}  # session_id -> {"pending": question awaiting cl
 contexts: dict[str, AgentContexts] = {}  # run_id -> every agent's context, for the agent timeline page
 
 app = FastAPI()
+app.add_middleware(GZipMiddleware, minimum_size=2000)  # the hexagon grid is 2.3 MB, ~0.5 MB gzipped
 add_context_panel(app, contexts)
 
 
@@ -447,7 +450,7 @@ def map_layer(layer: str, period: str | None = None, compare_to: str | None = No
     elif layer == "night_lights" and period in NIGHTLIGHT_PERIODS:
         rows = DB.execute("SELECT hex, radiance_mean FROM hex_nightlights WHERE period = ? AND radiance_mean IS NOT NULL", [period]).fetchall()
         meta = {"unit": "nW/cm²/sr", "label": f"Satellite brightness, {period}",
-                "caveat": "Measured by NASA Black Marble at ~1:30 a.m. solar time. Includes streets and signs."}
+                "caveat": "Measured by NASA Black Marble at ~1:30 a.m. solar time; includes streets and signs. Pixels are ~460 m, so values between them are interpolated."}
     elif layer == "night_lights_change" and period in NIGHTLIGHT_PERIODS and compare_to in NIGHTLIGHT_PERIODS:
         rows = DB.execute("""SELECT a.hex, (a.radiance_mean - b.radiance_mean) / b.radiance_mean * 100
             FROM hex_nightlights a JOIN hex_nightlights b USING (hex)
@@ -475,9 +478,19 @@ def meta():
     return {"periods": NIGHTLIGHT_PERIODS, "layers": MAP_LAYERS, "latest_grid_hour": LATEST_HOUR}
 
 
+@app.get("/places.geojson")
+def places():
+    rows = DB.execute("SELECT name, kind, lat, lon, hex FROM places").fetchall()
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"name": n, "kind": k, "hex": h}, "geometry": {"type": "Point", "coordinates": [lo, la]}}
+        for n, k, la, lo, h in rows]}
+
+
 @app.get("/hex_grid.geojson")
 def hex_grid():
-    return FileResponse(HERE / "data" / "hex_grid.geojson", media_type="application/geo+json")
+    # no-cache: a rebuild can change the grid, and stale hexagon ids match no values
+    return FileResponse(HERE / "data" / "hex_grid.geojson", media_type="application/geo+json",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/trace")

@@ -138,7 +138,7 @@
         <label id="periodbox" hidden><select id="period" aria-label="Period"></select></label>
         <label id="comparebox" hidden>vs <select id="compare" aria-label="Compare with"></select></label>
     </div>
-    <div id="legend" class="overlay"></div>
+    <div id="legend" class="overlay"><div class="caveat">Loading the map…</div></div>
 </section>
 
 <script>
@@ -278,22 +278,26 @@ async function showLayer(spec) {
     hexData.features.forEach((f) => { f.properties.v = data.values[f.properties.hex] ?? null; });
     map.getSource("hex").setData(hexData);
 
-    let color, ticks, bar;
+    let color, ticks, bar, opacity;
     if (data.diverging) {
         color = ["interpolate", ["linear"], ["get", "v"], -50, DIVERGING.low, 0, DIVERGING.mid, 50, DIVERGING.high];
         bar = `linear-gradient(90deg, ${DIVERGING.low}, ${DIVERGING.mid}, ${DIVERGING.high})`;
         ticks = ["−50% or darker", "no change", "+50% or brighter"];
+        opacity = ["interpolate", ["linear"], ["abs", ["get", "v"]], 0, 0.06, 15, 0.35, 50, 0.65];
     } else {
         const stops = quantiles(Object.values(data.values), GLOW.length);
         color = ["interpolate", ["linear"], ["get", "v"], ...stops.flatMap((s, i) => [s, GLOW[i]])];
         bar = `linear-gradient(90deg, ${GLOW.join(", ")})`;
         ticks = [fmt(stops[0]), fmt(stops[3]), fmt(stops[GLOW.length - 1]) + " " + data.unit];
+        opacity = ["interpolate", ["linear"], ["get", "v"], stops[0], 0.05, stops[2], 0.22, stops[4], 0.42, stops[6], 0.6];
     }
     map.setPaintProperty("hex-fill", "fill-color", ["case", ["==", ["get", "v"], null], "rgba(0,0,0,0)", color]);
+    map.setPaintProperty("hex-fill", "fill-opacity", ["case", ["==", ["get", "v"], null], 0, opacity]);
     $("legend").innerHTML = `<div class="title">${escapeHtml(spec.title || data.label)}</div>
         <div class="bar" style="background:${bar}"></div>
         <div class="ticks">${ticks.map((t) => `<span>${escapeHtml(t)}</span>`).join("")}</div>
-        <div class="caveat">${escapeHtml(data.caveat)}${data.diverging ? "" : " Colors are quantiles: each shade covers about the same number of hexagons."}</div>`;
+        <div class="caveat">${escapeHtml(data.caveat)}${data.diverging ? "" : " Colors are quantiles: each shade covers about the same number of hexagons."}</div>
+        <div class="caveat"><span style="color:#8fdcff">●</span> Landmark: click for its hexagon's numbers</div>`;
 }
 
 function syncPeriodControls(spec) {
@@ -329,33 +333,103 @@ function fromControls() {
 }
 ["layer", "period", "compare"].forEach((id) => $(id).addEventListener("change", fromControls));
 
-map.on("load", async () => {
-    const [grid, meta] = await Promise.all([fetch("/hex_grid.geojson").then((r) => r.json()), fetch("/meta").then((r) => r.json())]);
+// The basemap's own fonts: its glyph server only serves these stacks
+const FONT = {
+    bold: ["Montserrat SemiBold", "Open Sans Bold", "Noto Sans Regular", "Noto Sans CJK JP Regular"],
+    medium: ["Montserrat Medium", "Open Sans Regular", "Noto Sans Regular", "Noto Sans CJK JP Regular"],
+    italic: ["Montserrat Regular Italic", "Open Sans Italic", "Noto Sans Regular", "Noto Sans CJK JP Regular"],
+};
+const AREA_KINDS = ["borough", "neighborhood", "park"];
+const HALO = { "text-halo-color": "rgba(13, 15, 20, 0.85)", "text-halo-width": 1.5 };
+
+function addLabels() {
+    // Our borough and neighborhood labels replace the basemap's, which are patchy in NYC
+    for (const id of ["place_suburbs", "place_hamlet"]) map.setLayoutProperty(id, "visibility", "none");
+    const ours = ["New York", "Manhattan", "Brooklyn", "Queens", "The Bronx", "Bronx", "Staten Island"];
+    for (const layer of map.getStyle().layers) {
+        if (layer.id.startsWith("place_") && layer.filter) {
+            map.setFilter(layer.id, ["all", layer.filter, ["!", ["in", ["get", "name"], ["literal", ours]]]]);
+        }
+    }
+    map.addSource("places", { type: "geojson", data: "/places.geojson" });
+    const landmark = ["!", ["in", ["get", "kind"], ["literal", AREA_KINDS]]];
+    map.addLayer({
+        id: "landmark-dot", type: "circle", source: "places", filter: landmark, minzoom: 10.5,
+        paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 10.5, 2.5, 14, 5],
+            "circle-color": "#8fdcff", "circle-stroke-color": "#0d0f14", "circle-stroke-width": 1,
+        },
+    });
+    map.addLayer({
+        id: "landmark-label", type: "symbol", source: "places", filter: landmark, minzoom: 12.5,
+        layout: { "text-field": ["get", "name"], "text-font": FONT.medium, "text-size": 11, "text-anchor": "top",
+                  "text-offset": [0, 0.7], "text-max-width": 9 },
+        paint: { "text-color": "#bfeaff", ...HALO },
+    });
+    map.addLayer({
+        id: "park-label", type: "symbol", source: "places", filter: ["==", ["get", "kind"], "park"], minzoom: 11.5,
+        layout: { "text-field": ["get", "name"], "text-font": FONT.italic, "text-size": 12, "text-max-width": 7 },
+        paint: { "text-color": "#93c4a0", ...HALO },
+    });
+    map.addLayer({
+        id: "hood-label", type: "symbol", source: "places", filter: ["==", ["get", "kind"], "neighborhood"], minzoom: 11.5,
+        layout: { "text-field": ["get", "name"], "text-font": FONT.medium, "text-max-width": 7, "text-letter-spacing": 0.03,
+                  "text-size": ["interpolate", ["linear"], ["zoom"], 11.5, 11, 15, 15] },
+        paint: { "text-color": "#e2e4ea", ...HALO },
+    });
+    map.addLayer({
+        id: "borough-label", type: "symbol", source: "places", filter: ["==", ["get", "kind"], "borough"], maxzoom: 12.5,
+        layout: { "text-field": ["upcase", ["get", "name"]], "text-font": FONT.bold, "text-letter-spacing": 0.2,
+                  "text-size": ["interpolate", ["linear"], ["zoom"], 8, 10, 12, 18] },
+        paint: { "text-color": "#f4f4f6", ...HALO, "text-halo-width": 2 },
+    });
+}
+
+async function hexPopup(lngLat, hex, heading) {
+    const res = await fetch("/hex_info?hex=" + hex);
+    if (!res.ok) return;
+    const h = await res.json();
+    const v = hexData.features.find((f) => f.properties.hex === hex)?.properties.v;
+    const millions = (x) => (x / 1e6).toFixed(1) + "M sq ft";
+    const area = h.n_lots ? `${h.n_lots.toLocaleString()} tax lots<br>
+            Floor area: ${millions(h.bldgarea_sqft)} (${Math.round(h.commercial_share * 100)}% commercial)<br>
+            Modeled 1–5 a.m. lighting: ${Math.round(h.est_lighting_base_mw * 1000).toLocaleString()} kW
+            (${Math.round(h.est_lighting_controls_mw * 1000).toLocaleString()} kW with controls)<br>`
+        : "No tax lots: park, water or rail yard<br>";
+    new maplibregl.Popup({ maxWidth: "260px" }).setLngLat(lngLat).setHTML(`
+        ${heading ? `<b>${escapeHtml(heading)}</b><br>` : ""}
+        <b>${escapeHtml(h.borough ?? "")}</b>${h.zipcode ? " · ZIP " + escapeHtml(h.zipcode) : ""} · ${area}
+        Satellite brightness 2025: ${h.radiance_2025 != null ? h.radiance_2025.toFixed(0) + " nW/cm²/sr" : "n/a"}
+        ${v != null && $("layer").value !== "est_overnight_lighting" ? `<br>This layer: ${fmt(v)} ${escapeHtml(layerUnit)}` : ""}`).addTo(map);
+}
+
+// Start downloading while the basemap loads
+const gridReady = Promise.all([fetch("/hex_grid.geojson").then((r) => r.json()), fetch("/meta").then((r) => r.json())]);
+
+// style.load, not load: draw the hexagons without waiting for every basemap tile
+map.once("style.load", async () => {
+    const [grid, meta] = await gridReady;
     hexData = grid;
     periods = meta.periods;
     $("period").innerHTML = periods.map((p) => `<option>${p}</option>`).join("");
+    $("period").value = "2025";
     const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
     map.addSource("hex", { type: "geojson", data: hexData });
-    map.addLayer({ id: "hex-fill", type: "fill", source: "hex", paint: { "fill-color": "rgba(0,0,0,0)", "fill-opacity": 0.78 } }, firstLabel);
-    map.addLayer({ id: "hex-line", type: "line", source: "hex", paint: { "line-color": "#000", "line-opacity": 0.25, "line-width": 0.5 } }, firstLabel);
+    map.addLayer({ id: "hex-fill", type: "fill", source: "hex", paint: { "fill-color": "rgba(0,0,0,0)", "fill-opacity": 0 } }, firstLabel);
+    addLabels();
     showLayer({ layer: "est_overnight_lighting" });
 
-    map.on("mousemove", "hex-fill", () => { map.getCanvas().style.cursor = "pointer"; });
-    map.on("mouseleave", "hex-fill", () => { map.getCanvas().style.cursor = ""; });
-    map.on("click", "hex-fill", async (e) => {
-        const f = e.features[0];
-        const res = await fetch("/hex_info?hex=" + f.properties.hex);
-        if (!res.ok) return;
-        const h = await res.json();
-        const v = f.properties.v;
-        const millions = (x) => (x / 1e6).toFixed(1) + "M sq ft";
-        new maplibregl.Popup({ maxWidth: "260px" }).setLngLat(e.lngLat).setHTML(`
-            <b>${escapeHtml(h.borough ?? "")}</b> · ZIP ${escapeHtml(h.zipcode ?? "n/a")} · ${h.n_lots.toLocaleString()} tax lots<br>
-            Floor area: ${millions(h.bldgarea_sqft)} (${Math.round(h.commercial_share * 100)}% commercial)<br>
-            Modeled 1–5 a.m. lighting: ${Math.round(h.est_lighting_base_mw * 1000).toLocaleString()} kW
-            (${Math.round(h.est_lighting_controls_mw * 1000).toLocaleString()} kW with controls)<br>
-            Satellite brightness 2025: ${h.radiance_2025 != null ? h.radiance_2025.toFixed(0) + " nW/cm²/sr" : "n/a"}
-            ${v != null && $("layer").value !== "est_overnight_lighting" ? `<br>This layer: ${fmt(v)} ${escapeHtml(layerUnit)}` : ""}`).addTo(map);
+    const landmarkAt = (point) => map.queryRenderedFeatures(
+        [[point.x - 10, point.y - 10], [point.x + 10, point.y + 10]], { layers: ["landmark-dot"] })[0];
+    map.on("mousemove", (e) => {
+        const hit = landmarkAt(e.point) || map.queryRenderedFeatures(e.point, { layers: ["hex-fill"] })[0];
+        map.getCanvas().style.cursor = hit ? "pointer" : "";
+    });
+    map.on("click", (e) => {
+        const place = landmarkAt(e.point);
+        if (place) return hexPopup(place.geometry.coordinates, place.properties.hex, place.properties.name);
+        const hex = map.queryRenderedFeatures(e.point, { layers: ["hex-fill"] })[0];
+        if (hex) hexPopup(e.lngLat, hex.properties.hex);
     });
 });
 </script>
