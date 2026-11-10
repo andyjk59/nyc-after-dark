@@ -30,8 +30,9 @@ set_tracing_disabled(True)
 
 # LiteLLM routes the call to Gemini. api_key is unused: Vertex AI uses your gcloud credentials.
 MODEL = LitellmModel(model="vertex_ai/gemini-3.5-flash", api_key="unused")
-# A stalled model call would hang the page: give up after 90 s, and retry twice.
-SETTINGS = ModelSettings(extra_args={"vertex_location": "global", "timeout": 90, "num_retries": 2})
+# A stalled model call would eat the run's time budget: normal calls take 3-15 s, so give up after 40 s
+# and retry, at most twice.
+SETTINGS = ModelSettings(extra_args={"vertex_location": "global", "timeout": 40, "num_retries": 2})
 
 # The Lead gets this many researchers in all. Prompts ask for restraint; code enforces it.
 MAX_RESEARCHERS = 8
@@ -172,7 +173,17 @@ def show_on_map(ctx: RunContextWrapper[Research], layer: Literal["est_overnight_
 
 DOMAIN_NOTES = """\
 Facts about the data:
-- "Overnight" means 1-5 a.m. local time: hour_local / hour BETWEEN 1 AND 4 (hour-starting).
+- "Overnight" means 1-5 a.m. local time: hour_local / hour BETWEEN 1 AND 4 (hour-starting). Use only this
+  window; don't add others (like 11 p.m.-6 a.m.) unless the question asks for one.
+- For overnight load or price by night, month or year, start from overnight_daily: floor_mw and
+  floor_price_usd_mwh are already 1-5 a.m. averages. In nyiso_hourly every overnight number needs
+  WHERE hour_local BETWEEN 1 AND 4; without it you get all-day averages. Name each output column for
+  what it really holds, and check your filters match those names before you report.
+- "Since 2020", "so far", "recent" and "now" run through the newest data, including the current year to
+  date: say when a year is partial. "Highest" or "lowest" over time: check years, months and nights,
+  and report the top of each where they differ.
+- Prices are NYISO day-ahead wholesale prices for NYC, $/MWh. Retail rates (what customers pay, with
+  delivery) are not in the data. Wholesale cost = MWh x $/MWh.
 - Grid load (nyiso_*) and LL84 are MEASURED. ComStock (comstock_*) and hex_cells.est_* are MODELED.
   Black Marble (nightlights) is MEASURED BRIGHTNESS, not energy. Say which each number is.
 - ComStock describes one typical year of today's building stock: it cannot show change across years.
@@ -222,7 +233,7 @@ Your tables:
    its unit, says MEASURED or MODELED, and ends with the query id it came from, e.g. [Q3].
    Round to 3 significant figures. Give percent changes when comparing.
 3. Stick to your task: don't report numbers it didn't ask for.
-4. If the data can't answer part of your task, say so in a last bullet, and why.""",
+4. If the data can't answer part of your task, say so in a last bullet, and why, without a query id.""",
         model=MODEL,
         model_settings=SETTINGS,
         tools=tools,
@@ -264,16 +275,24 @@ leave on (a modeled range).
 
 Your researchers: {"; ".join(f"{k}: {v[0]}" for k, v in RESEARCHERS.items())}.
 
+The grid data runs through {LATEST_HOUR:%B %-d, %Y}, so the current year is {LATEST_HOUR.year}. Never assume an earlier
+year is the latest: "since 2020" means 2020 through {LATEST_HOUR.year}.
+
 1. If the question is too vague to research, for example it asks how much is "wasted" without saying
    which kind, reply with CLARIFY: and one short question offering 2 to 4 options (one can be "all of
    them"). Do this at most once: if the input includes a clarification, research it. Concrete
    questions never need clarifying.
 2. If the question has nothing to do with NYC energy, lighting or buildings, reply OUT_OF_SCOPE: and
    one sentence on what you can answer instead.
-3. Otherwise split the question into 2 to 4 tasks and call research once per task, all in the same
-   turn, so the researchers work in parallel. Say exactly which numbers each task needs.
+3. Otherwise split the question into 1 to 4 independent tasks and call research once per task, all in
+   the same turn, so the researchers work in parallel. Send only researchers whose slice bears on the
+   question: load, prices and costs over time are grid questions; lighting savings need lighting (and
+   grid for prices); satellite data only when the question is about brightness or places. Give each
+   researcher distinct work: never two tasks that ask for the same or overlapping numbers. Say exactly
+   which numbers each task needs, the time range (through the newest data unless the question says
+   otherwise), and that overnight means 1-5 a.m.
 4. Read the findings. If part of the question is still unanswered, or two findings disagree, call
-   research again for just that part. Do this at most twice.
+   research again for just that part. Do this at most twice. Don't re-check numbers already answered.
 5. When the question is covered, reply DONE and nothing else: a writer writes the answer.""",
     model=MODEL,
     model_settings=SETTINGS,
@@ -288,15 +307,20 @@ Write the answer in markdown, using only the findings you're given.
 - Start with a short paragraph that answers the question directly, with the key numbers.
 - Then a few short sections or bullets with the supporting numbers.
 - End every sentence that states a number with the query id(s) from its finding, e.g. [Q3] or [Q2, Q5].
-  Never invent a query id or a number.
-- Label numbers as measured or modeled. Call the lights-out share an assumption.
+  Never invent a query id or a number. Statements about missing data take no query id.
+- Say whether numbers are measured or modeled once per paragraph or section (e.g. "Measured grid data
+  shows..."), not before every number. Call the lights-out share an assumption. Prices are wholesale:
+  say so when talking about costs.
+- If a year in the findings is partial, say so.
 - End with a section "What this data can't tell you" (1 to 3 bullets), e.g. which building leaves lights
   on (no building-level night data), or change over time in modeled numbers.
-- Answer the question asked. Leave out findings that don't bear on it.
+- Answer the question asked. Leave out findings that don't bear on it. Don't repeat a number you've
+  already given: if the findings are thin, a short answer is better than a padded one.
 - Keep it under about 350 words. Round to 3 significant figures.
 - Plain, specific sentences. No "it is worth noting", "pivotal" or "crucial".
 
-Before writing, call show_on_map once with the layer that best shows the answer:
+Before writing, if one of these layers shows what the answer is about, call show_on_map once with it.
+Citywide grid load and prices aren't on the map: for those, don't call it. Layers:
 est_overnight_lighting for where modeled lighting is, night_lights or night_lights_change for satellite
 brightness (periods: {", ".join(NIGHTLIGHT_PERIODS)}), commercial_share for building mix.""",
     model=MODEL,
