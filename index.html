@@ -22,7 +22,17 @@
         display: grid; grid-template-columns: minmax(360px, 34rem) 1fr;
     }
     #side { display: flex; flex-direction: column; min-height: 0; height: 100vh; background: var(--panel); border-right: 1px solid var(--line); }
-    header { padding: 1.1rem 1.25rem 0.6rem; }
+    header { padding: 1.1rem 1.25rem 0.6rem; position: relative; }
+    .header-links { position: absolute; top: 1.15rem; right: 1.25rem; display: flex; gap: 0.4rem; }
+    .header-links button {
+        background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 6px;
+        padding: 0.2rem 0.55rem; font: inherit; font-size: 0.78rem; cursor: pointer;
+    }
+    .header-links button:hover { color: var(--text); border-color: var(--accent-dim); }
+    .notes { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+    .notes li { margin: 0.3rem 0; }
+    .notes b { color: var(--text); }
+    .intro .notes { color: #c9ccd6; }
     header h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.01em; }
     header h1 span { color: var(--accent); }
     header p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.9rem; }
@@ -49,6 +59,14 @@
     .msg.bot .body table { border-collapse: collapse; font-size: 0.85rem; }
     .msg.bot .body td, .msg.bot .body th { border: 1px solid var(--line); padding: 0.2rem 0.5rem; }
     .cite { color: var(--accent); font-size: 0.8em; white-space: nowrap; }
+    .cite button { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+    .cite button:hover { color: #ffd98a; }
+    .cite button.missing { color: var(--bad); text-decoration: line-through; cursor: help; }
+    .call.flash { animation: flash 2s ease-out; }
+    @keyframes flash { from { background: rgba(245, 181, 68, 0.25); } to { background: transparent; } }
+    .call .qid { color: var(--text); font-weight: 600; margin-right: 0.3rem; }
+    .notice { color: var(--accent) !important; }
+    .elapsed { color: var(--text); }
     .clarify { border-left: 3px solid var(--accent); padding-left: 0.7rem; }
     .progress { font-size: 0.8rem; color: var(--muted); font-family: ui-monospace, monospace; }
     .progress div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -69,7 +87,25 @@
     }
     textarea:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
     form button { background: var(--accent); color: #1a1205; border: 0; border-radius: 8px; padding: 0 1rem; font-weight: 600; cursor: pointer; }
-    form button:disabled { opacity: 0.5; cursor: wait; }
+    form button.stop { background: var(--raised); color: var(--text); border: 1px solid var(--line); }
+    form button.stop:hover { border-color: var(--bad); }
+    dialog {
+        background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
+        width: min(44rem, calc(100vw - 32px)); max-height: calc(100vh - 4rem); padding: 0; font-size: 0.88rem;
+    }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+    dialog .head { position: sticky; top: 0; background: var(--panel); display: flex; justify-content: space-between; align-items: center; padding: 0.9rem 1.25rem; border-bottom: 1px solid var(--line); }
+    dialog .head h2 { margin: 0; font-size: 1.05rem; }
+    dialog .head button { background: none; border: 0; color: var(--muted); font-size: 1.4rem; line-height: 1; cursor: pointer; }
+    dialog .content { padding: 0.25rem 1.25rem 1.25rem; }
+    dialog h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 1.1rem 0 0.4rem; }
+    dialog a { color: var(--accent); }
+    dialog table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+    dialog td, dialog th { text-align: left; vertical-align: top; border-top: 1px solid var(--line); padding: 0.4rem 0.5rem 0.4rem 0; }
+    dialog th { color: var(--muted); font-weight: 500; }
+    .tag { display: inline-block; font-size: 0.7rem; border-radius: 4px; padding: 0 0.3rem; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+    .tag.measured { color: #9fd4ff; border-color: #2c4a66; }
+    .tag.modeled { color: #ffd98a; border-color: #6b4c14; }
     #mapwrap { position: relative; min-height: 0; }
     #map { position: absolute; inset: 0; }
     .overlay { position: absolute; background: rgba(21, 24, 33, 0.92); border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.8rem; font-size: 0.82rem; }
@@ -99,20 +135,40 @@
     <header>
         <h1>NYC <span>After Dark</span></h1>
         <p>How much electricity does New York use, and waste, between 1 and 5 a.m.?</p>
+        <div class="header-links">
+            <button id="newchat" type="button" hidden>New chat</button>
+            <button id="methods" type="button">Sources &amp; methods</button>
+        </div>
     </header>
-    <div id="log">
+    <div id="log"></div>
+    <template id="intro">
         <div class="intro">
             <h2>What this explores</h2>
-            <p>New York City's overnight electricity: measured hourly grid load and prices (NYISO, 2016 to yesterday),
-            modeled commercial lighting by building type (NREL ComStock), building floor area and metered energy
-            (PLUTO, LL84), and satellite night lights (NASA Black Marble, 2013–2026). A team of AI researchers
-            queries this data with SQL, cites every number, and draws the result on the map.</p>
+            <p>New York City's overnight electricity, from four kinds of data: the city's hourly grid load and
+            prices, a model of lighting in commercial buildings, building records, and satellite night lights.
+            A team of AI researchers queries the data with SQL, cites every number, and draws the result on the map.</p>
+            <h2>Good to know</h2>
+            <ul class="notes">
+                <li><b>Measured or modeled.</b> Grid load (NYISO, 2016 to yesterday) and building meter reports
+                (LL84) are measured. Lighting (NREL ComStock) is modeled: a simulation of typical buildings, not
+                meter readings. Satellite data (NASA Black Marble) measures brightness, not energy. Answers say which is which.</li>
+                <li><b>Lighting means commercial lighting.</b> Lighting numbers cover offices, stores, hotels,
+                hospitals, schools and warehouses. Homes, streetlights, restaurants, factories and data centers
+                aren't in the model. Grid numbers include everything, but can't be split by building or use.</li>
+                <li><b>Dark hexagons are data, not gaps.</b> On the lighting map, black means zero modeled
+                commercial lighting: parks, cemeteries, rail yards and blocks of only homes. Switch the map to
+                Satellite brightness to see all light, homes and streets included.</li>
+                <li><b>Neighborhood-scale, not building-scale.</b> Hexagons are about 350 m across and satellite
+                pixels about 460 m, so the map can't single out one building's lights.</li>
+                <li><b>NYC overnight energy only.</b> Other questions get a short "can't answer that". The AI can
+                misread data: click any [Q#] to check the query behind a number.</li>
+            </ul>
             <h2>Who it's for</h2>
             <p>Students, journalists, City Council staff and anyone weighing lights-out rules or lighting retrofits
             who needs a number with its source, not a guess.</p>
             <h2>How to use it</h2>
-            <p>Ask a question, or start with one below. Answers take 1–3 minutes. Each number links to the query
-            that produced it; open "How I got this" to see every query. Click a hexagon on the map for its details.</p>
+            <p>Ask a question, or start with one below. Answers take 1–3 minutes, 4 at most. Click a hexagon on
+            the map for its details.</p>
             <div class="examples">
                 <button data-q="How much electricity does commercial lighting use in NYC between 1 and 5 a.m., and how much of that could lighting controls or a lights-out rule avoid?">How much overnight lighting could NYC avoid?<br><small>modeled lighting, retrofit vs lights-out</small></button>
                 <button data-q="Did NYC's overnight electricity use and night-time brightness drop during the April 2020 shutdown compared with April 2019?">Did the city go dark in the 2020 shutdown?<br><small>grid load and satellite, 2019 vs 2020</small></button>
@@ -120,12 +176,73 @@
                 <button data-q="How much energy is wasted in NYC overnight?">How much energy is wasted overnight?<br><small>a broad question: it will ask what you mean</small></button>
             </div>
         </div>
-    </div>
+    </template>
     <form id="ask">
-        <textarea id="q" placeholder="Ask about NYC's overnight energy…" aria-label="Your question" required></textarea>
+        <textarea id="q" placeholder="Ask about NYC's overnight energy…" aria-label="Your question" maxlength="1000"></textarea>
         <button id="send">Ask</button>
     </form>
 </section>
+<dialog id="methods-dialog" aria-labelledby="methods-title">
+    <div class="head"><h2 id="methods-title">Sources &amp; methods</h2><button type="button" aria-label="Close" data-close>×</button></div>
+    <div class="content">
+        <h3>The data</h3>
+        <table>
+            <tr><th>Source</th><th>What it is</th><th>Covers</th></tr>
+            <tr><td><a href="http://mis.nyiso.com/public/" target="_blank" rel="noopener">NYISO</a> <span class="tag measured">measured</span></td>
+                <td>Hourly electricity load for Zone J (New York City) and day-ahead prices. Everything on the grid: homes, offices, subways, hospitals.</td>
+                <td>Jan 2016 to yesterday; later days fetched live</td></tr>
+            <tr><td><a href="https://comstock.nrel.gov/" target="_blank" rel="noopener">NREL ComStock</a> <span class="tag modeled">modeled</span></td>
+                <td>Simulated hourly lighting and electricity for today's commercial buildings, by borough and building type, as built and with a Lighting Controls retrofit (occupancy sensors and similar).</td>
+                <td>One typical year (2018 weather); 2025 release 3. Can't show change over time.</td></tr>
+            <tr><td><a href="https://data.cityofnewyork.us/d/64uk-42ks" target="_blank" rel="noopener">MapPLUTO</a> <span class="tag measured">records</span></td>
+                <td>Every tax lot's floor area by use (office, retail, homes, storage…), building class and location.</td>
+                <td>Release 26v2, 857,000 lots</td></tr>
+            <tr><td><a href="https://data.cityofnewyork.us/d/5zyy-y8am" target="_blank" rel="noopener">LL84 benchmarking</a> <span class="tag measured">measured</span></td>
+                <td>Yearly metered electricity that large buildings report to the city (25,000+ sq ft private, 10,000+ city-owned). Self-reported, so outliers exist. No hourly data.</td>
+                <td>Report years 2022–2024</td></tr>
+            <tr><td><a href="https://blackmarble.gsfc.nasa.gov/" target="_blank" rel="noopener">NASA Black Marble</a> <span class="tag measured">measured</span></td>
+                <td>Satellite brightness at about 1:30 a.m., in ~460 m pixels, with clouds, moonlight and snow removed. All light: streets, signs, homes. Brightness, not energy.</td>
+                <td>Yearly 2013–2025; monthly for spring 2019, spring 2020 and Oct 2025–Sep 2026</td></tr>
+            <tr><td>Map labels</td>
+                <td>Neighborhood, park and landmark points placed by hand at approximate centers.</td>
+                <td>89 places</td></tr>
+        </table>
+
+        <h3>Definitions and assumptions</h3>
+        <ul class="notes">
+            <li><b>Overnight</b> is 1–5 a.m. local time: the four hours starting at 1, 2, 3 and 4 a.m.</li>
+            <li><b>"Waste" has three levels.</b> (1) All overnight grid load: measured, but it includes homes,
+            hospitals and subways, so it's a ceiling, not waste. (2) Commercial lighting on at night: modeled.
+            (3) Avoidable lighting: level 2 minus what a lighting-controls retrofit or a lights-out rule would leave on.</li>
+            <li><b>Lights-out rule:</b> 20% of overnight lighting is assumed to stay on for exits, security and night
+            shifts. That's an assumption, not a measurement, and answers call it one.</li>
+            <li><b>The lighting map</b> spreads ComStock's lighting per square foot (by borough and building type)
+            over each hexagon's commercial floor area from PLUTO. It places about 94% of the citywide modeled total;
+            use it for where, and the citywide figures for how much.</li>
+            <li><b>Hexagons</b> are H3 resolution 9, about 350 m across. Satellite values are interpolated from the
+            four nearest pixels, so neighboring hexagons share data.</li>
+        </ul>
+
+        <h3>How an answer is made</h3>
+        <ul class="notes">
+            <li>A Lead agent asks you to clarify if the question is vague, then splits it into 2–4 tasks.</li>
+            <li>Researchers, each starting fresh with only its task and one slice of the data, run read-only SQL
+            in parallel. Each query gets an id like Q3. The Lead can send more researchers to fill gaps (8 at most).</li>
+            <li>A Writer turns the findings into the answer and picks a map layer. The Sources list under each answer
+            is built from the log of queries actually run, not by the AI, and flags any id that doesn't exist.</li>
+            <li>Research stops after 3 minutes; the answer then uses whatever findings are in and says so.</li>
+            <li>"How I got this" under each answer shows every query and its result; "Agent timeline" shows
+            exactly what each agent saw.</li>
+        </ul>
+
+        <h3>What it can't tell you</h3>
+        <ul class="notes">
+            <li>Which building leaves its lights on: there is no building-level night-time data.</li>
+            <li>Home lighting, streetlights, restaurants, factories or data centers on their own: they aren't modeled.</li>
+            <li>How modeled lighting changed over time: ComStock describes one typical year.</li>
+        </ul>
+    </div>
+</dialog>
 <section id="mapwrap">
     <div id="map"></div>
     <div id="controls" class="overlay">
@@ -151,13 +268,17 @@ let layerUnit = "";
 
 // --- Chat ---
 
+let current = null;  // the running question: { source, timer, bot }
+
 function escapeHtml(s) {
     return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 
 function renderMarkdown(text) {
     const html = DOMPurify.sanitize(marked.parse(text));
-    return html.replace(/\[(Q\d+(?:\s*,\s*Q\d+)*)\]/g, '<span class="cite">[$1]</span>');
+    // [Q2, Q5] -> [<Q2>, <Q5>]: each id is a button that opens its query under "How I got this"
+    return html.replace(/\[(Q\d+(?:\s*,\s*Q\d+)*)\]/g, (_, ids) => '<span class="cite">[' +
+        ids.split(/\s*,\s*/).map((q) => `<button type="button" data-q="${q}">${q}</button>`).join(", ") + "]</span>");
 }
 
 function addMessage(cls, html) {
@@ -171,22 +292,60 @@ function addMessage(cls, html) {
 
 function describeCall(call) {
     const args = call.args || {};
-    let what = args.sql ?? args.task ?? (args.day ? "day " + args.day : JSON.stringify(args));
-    return `<div class="call"><b>${escapeHtml(call.agent)}</b> · ${escapeHtml(call.name)}
+    const what = args.sql ?? args.task ?? (args.day ? "day " + args.day : JSON.stringify(args));
+    const qid = /^(Q\d+) /.exec(call.result || "")?.[1];
+    return `<div class="call"${qid ? ` data-qid="${qid}"` : ""}>${qid ? `<span class="qid">${qid}</span>` : ""}<b>${escapeHtml(call.agent)}</b> · ${escapeHtml(call.name)}
         <pre>${escapeHtml(what)}</pre>
         ${call.name === "run_sql" || call.name === "fetch_latest_nyiso" ? `<pre>${escapeHtml(call.result.slice(0, 1500))}</pre>` : ""}</div>`;
 }
 
+function progressLine(progress, text, cls) {
+    const line = document.createElement("div");
+    line.textContent = text;
+    if (cls) line.className = cls;
+    progress.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+}
+
+function setRunning(running) {
+    $("send").textContent = running ? "Stop" : "Ask";
+    $("send").classList.toggle("stop", running);
+    $("send").setAttribute("aria-label", running ? "Stop this question" : "Ask");
+}
+
+function finish() {
+    if (!current) return;
+    current.source.close();
+    clearInterval(current.timer);
+    current = null;
+    setRunning(false);
+}
+
+function stop() {
+    if (!current) return;
+    const bot = current.bot;
+    finish();  // closing the stream cancels the run on the server
+    bot.innerHTML = '<div class="body" style="color:var(--muted)">Stopped. Nothing was saved from this question.</div>';
+}
+
 function ask(question) {
-    $("send").disabled = true;
+    if (current) return;
     log.querySelector(".intro")?.remove();
+    $("newchat").hidden = false;
     addMessage("user", escapeHtml(question));
-    const bot = addMessage("bot", '<div class="progress"><div><span class="spinner"></span>Planning the research…</div></div>');
+    const bot = addMessage("bot", '<div class="progress" aria-live="polite"><div><span class="spinner"></span>Researching · <span class="elapsed">0:00</span></div></div>');
     const progress = bot.querySelector(".progress");
     const params = new URLSearchParams({ message: question });
     if (sessionId) params.set("session_id", sessionId);
     const source = new EventSource("/run?" + params);
     const started = Date.now();
+    const timer = setInterval(() => {
+        const s = Math.round((Date.now() - started) / 1000);
+        bot.querySelector(".elapsed").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+        if (s === 120) progressLine(progress, "Still working: answers stop at 4 minutes at most", "notice");
+    }, 1000);
+    current = { source, timer, bot };
+    setRunning(true);
 
     source.onmessage = (e) => {
         const event = JSON.parse(e.data);
@@ -194,19 +353,19 @@ function ask(question) {
         if (event.type === "tool") {
             const a = event.args || {};
             const detail = a.sql ? a.sql.replace(/\s+/g, " ") : a.task ?? a.title ?? a.day ?? "";
-            const line = document.createElement("div");
-            line.textContent = `${event.agent} · ${event.name}${detail ? ": " + detail : ""}`;
-            progress.appendChild(line);
-            log.scrollTop = log.scrollHeight;
+            progressLine(progress, `${event.agent} · ${event.name}${detail ? ": " + detail : ""}`);
         }
         if (event.type === "activity" && event.text === "started" && event.agent !== "Lead") {
-            const line = document.createElement("div");
-            line.textContent = `${event.agent} started`;
-            progress.appendChild(line);
+            progressLine(progress, `${event.agent} started`);
         }
+        if (event.type === "notice") progressLine(progress, event.text, "notice");
         if (event.type === "map") showLayer(event.map);
+        if (event.type === "error") {
+            finish();
+            bot.innerHTML = `<div class="body" style="color:var(--bad)">${escapeHtml(event.message)}</div>`;
+        }
         if (event.type === "done") {
-            source.close();
+            finish();
             sessionId = event.session_id;
             const seconds = Math.round((Date.now() - started) / 1000);
             const research = event.tool_calls.filter((c) => c.name !== "show_on_map");
@@ -215,30 +374,68 @@ function ask(question) {
                 (research.length ? `<details class="work"><summary>How I got this: ${research.length} tool calls, ${seconds} s</summary>
                     ${event.tool_calls.map(describeCall).join("")}</details>` : "") +
                 (research.length ? `<div class="links"><a href="/trace?run=${event.run_id}" target="_blank">Agent timeline: every agent's context</a></div>` : "");
+            bot.querySelectorAll(".cite button").forEach((b) => {
+                const found = bot.querySelector(`.call[data-qid="${b.dataset.q}"]`);
+                b.title = found ? `Show query ${b.dataset.q}` : `No query ${b.dataset.q} was run: treat this number as unsupported`;
+                if (!found) b.classList.add("missing");
+            });
             if (event.map) showLayer(event.map);
-            $("send").disabled = false;
             log.scrollTop = bot.offsetTop - 60;
         }
     };
     source.onerror = () => {
         // EventSource would reconnect and ask again: stop it.
-        source.close();
+        finish();
         bot.innerHTML = '<div class="body" style="color:var(--bad)">The connection dropped before the answer arrived. Try again.</div>';
-        $("send").disabled = false;
     };
 }
 
+// A citation opens "How I got this" at its query
+log.addEventListener("click", (e) => {
+    const b = e.target.closest(".cite button");
+    if (!b || b.classList.contains("missing")) return;
+    const msg = b.closest(".msg");
+    const call = msg.querySelector(`.call[data-qid="${b.dataset.q}"]`);
+    if (!call) return;
+    msg.querySelector("details.work").open = true;
+    call.scrollIntoView({ behavior: "smooth", block: "center" });
+    call.classList.remove("flash");
+    void call.offsetWidth;  // restart the animation
+    call.classList.add("flash");
+});
+
+function showIntro() {
+    log.replaceChildren($("intro").content.cloneNode(true));
+    log.querySelectorAll(".examples button").forEach((b) => b.addEventListener("click", () => ask(b.dataset.q)));
+}
+
+$("newchat").addEventListener("click", () => {
+    stop();
+    sessionId = null;
+    $("newchat").hidden = true;
+    showIntro();
+    $("q").focus();
+});
+
+$("methods").addEventListener("click", () => $("methods-dialog").showModal());
+$("methods-dialog").addEventListener("click", (e) => {
+    // the close button, or a click on the backdrop
+    if (e.target.closest("[data-close]") || e.target === $("methods-dialog")) $("methods-dialog").close();
+});
+
 $("ask").addEventListener("submit", (e) => {
     e.preventDefault();
+    if (current) return stop();
     const q = $("q").value.trim();
-    if (!q || $("send").disabled) return;
+    if (!q) return;
     $("q").value = "";
     ask(q);
 });
 $("q").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask").requestSubmit(); }
+    // Enter asks; it never stops a running question
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!current) $("ask").requestSubmit(); }
 });
-document.querySelectorAll(".examples button").forEach((b) => b.addEventListener("click", () => ask(b.dataset.q)));
+showIntro();
 
 // --- Map ---
 
@@ -249,6 +446,9 @@ const map = new maplibregl.Map({
     container: "map",
     style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
     bounds: [[-74.26, 40.49], [-73.70, 40.92]], fitBoundsOptions: { padding: 20 }, minZoom: 8, maxZoom: 15,
+    // The hexagons span [-74.264, 40.490]–[-73.690, 40.920]. Panning stops at 1.5× that box (25% extra on
+    // each side), and zooming out stops once the view fills it, so the whole city always fits on screen.
+    maxBounds: [[-74.41, 40.38], [-73.55, 41.03]], renderWorldCopies: false,
     attributionControl: { compact: true },
 });
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");

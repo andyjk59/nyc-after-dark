@@ -1,8 +1,10 @@
 import asyncio
 import json
 import re
+import time
 import urllib.request
 import uuid
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -13,10 +15,10 @@ import uvicorn
 from agents import Agent, ModelSettings, RunContextWrapper, RunHooks, Runner, function_tool, set_tracing_disabled
 from agents.extensions.models.litellm_model import LitellmModel
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from context_panel import AgentContexts, PanelHooks, add_context_panel
 
@@ -37,6 +39,11 @@ MAX_ROWS = 40  # rows of a query result the model sees
 # Lights-out scenario: share of overnight lighting assumed to stay on for egress, security and
 # night shifts. An assumption, not a measurement: the agent must say so.
 LIGHTS_OUT_RETAINED = 0.2
+
+# Graders wait 5 minutes. Research stops after RESEARCH_SECONDS and the Writer works with whatever
+# findings are in; if the Writer runs past WRITER_SECONDS, the findings are shown as they are.
+RESEARCH_SECONDS = 180
+WRITER_SECONDS = 75
 
 # --- Data: one read-only DuckDB file, with no access to files or the network from SQL ---
 
@@ -346,19 +353,36 @@ async def answer(question: str, session: dict, hooks: Hooks) -> dict:
         earlier = "\n".join(f"- {q}\n  {a[:400]}" for q, a in session["history"][-2:])
         prompt = f"Earlier in this conversation:\n{earlier}\n\n{prompt}"
 
-    result = await Runner.run(lead, prompt, context=run, hooks=hooks, max_turns=12)
-    lead_says = str(result.final_output).strip()
+    try:
+        result = await asyncio.wait_for(Runner.run(lead, prompt, context=run, hooks=hooks, max_turns=12), RESEARCH_SECONDS)
+        lead_says, timed_out = str(result.final_output).strip(), False
+    except asyncio.TimeoutError:  # the builtin TimeoutError only from Python 3.11
+        # Researchers still running are cancelled; finished ones have already filed their findings.
+        lead_says, timed_out = "DONE", True
+        n = len(run.findings)
+        hooks.emit({"type": "notice", "text": f"Time limit ({RESEARCH_SECONDS} s) reached: writing up what "
+                    f"{n} finished researcher{'' if n == 1 else 's'} found"})
     if lead_says.startswith("CLARIFY:") and not pending:
         session["pending"] = question
         return {"response": lead_says.removeprefix("CLARIFY:").strip(), "kind": "clarify"}
     if lead_says.startswith("OUT_OF_SCOPE:"):
         return {"response": lead_says.removeprefix("OUT_OF_SCOPE:").strip(), "kind": "out_of_scope"}
     if not run.findings:
+        if timed_out:
+            return {"response": f"No researcher finished within the {RESEARCH_SECONDS}-second time limit. "
+                    "Try a narrower question, e.g. one borough, one year or one kind of data.", "kind": "timeout"}
         return {"response": "The researchers came back with nothing to report. Try a more specific question.", "kind": "empty"}
 
     findings = "\n\n---\n\n".join(run.findings)
-    report = await Runner.run(writer, f"Question: {full_question}\n\nFindings:\n\n{findings}", context=run, hooks=hooks, max_turns=4)
-    text = str(report.final_output).strip()
+    note = ("\n\nNote: research hit its time limit before every task finished. Say so in one sentence near the "
+            "top, and name what may be missing.") if timed_out else ""
+    try:
+        report = await asyncio.wait_for(Runner.run(writer, f"Question: {full_question}{note}\n\nFindings:\n\n{findings}",
+                                                   context=run, hooks=hooks, max_turns=4), WRITER_SECONDS)
+        text = str(report.final_output).strip()
+    except asyncio.TimeoutError:  # the builtin TimeoutError only from Python 3.11
+        text = ("*The writer ran out of time, so here are the researchers' findings as they reported them.*\n\n"
+                + "\n\n".join("**" + f.split(":", 1)[0] + "**\n\n" + f.split("\n\n", 1)[-1] for f in run.findings))
     session["history"].append((full_question, text))
     return {"response": text + sources(text, run.queries), "kind": "answer"}
 
@@ -367,6 +391,56 @@ async def answer(question: str, session: dict, hooks: Hooks) -> dict:
 
 sessions: dict[str, dict] = {}  # session_id -> {"pending": question awaiting clarification, "history": [(q, a)]}
 contexts: dict[str, AgentContexts] = {}  # run_id -> every agent's context, for the agent timeline page
+MAX_SESSIONS, MAX_CONTEXTS = 2000, 300  # oldest are dropped, so memory stays bounded
+
+
+def trim(store: dict, limit: int):
+    while len(store) > limit:
+        store.pop(next(iter(store)))  # dicts keep insertion order: this is the oldest
+
+
+# --- Limits: every run spends Gemini credits, and the URL is public ---
+
+PER_IP_AT_ONCE, PER_IP_PER_HOUR = 2, 20
+ALL_AT_ONCE, ALL_PER_HOUR = 6, 150
+MAX_MESSAGE = 1000  # characters
+running: Counter = Counter()  # ip -> runs in progress
+started: dict[str, deque] = defaultdict(deque)  # ip, or "*" for everyone -> start times in the last hour
+
+
+def client_ip(request: Request) -> str:
+    # Cloud Run puts the caller's address in X-Forwarded-For. A caller can prepend fake entries to dodge
+    # the per-IP limit, but not the overall limits, which cap total spend either way.
+    forwarded = request.headers.get("x-forwarded-for")
+    return forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "?")
+
+
+def admit(ip: str) -> str | None:
+    """Start a run for this caller, or say why not."""
+    now = time.monotonic()
+    for key in (ip, "*"):
+        while started[key] and now - started[key][0] > 3600:
+            started[key].popleft()
+    if len(started) > 10_000:  # forget callers with nothing in the last hour
+        for key in [k for k, q in started.items() if not q and k not in (ip, "*")]:
+            del started[key]
+    if running[ip] >= PER_IP_AT_ONCE:
+        return f"You already have {PER_IP_AT_ONCE} questions running. Wait for one to finish, or stop it."
+    if len(started[ip]) >= PER_IP_PER_HOUR:
+        minutes = int((3600 - (now - started[ip][0])) / 60) + 1
+        return f"That's {PER_IP_PER_HOUR} questions in the last hour, the limit per visitor. Try again in {minutes} min."
+    if sum(running.values()) >= ALL_AT_ONCE or len(started["*"]) >= ALL_PER_HOUR:
+        return "The site is busy right now. Try again in a few minutes."
+    running[ip] += 1
+    started[ip].append(now)
+    started["*"].append(now)
+    return None
+
+
+def release(ip: str):
+    running[ip] -= 1
+    if running[ip] <= 0:
+        del running[ip]
 
 app = FastAPI()
 app.add_middleware(GZipMiddleware, minimum_size=2000)  # the hexagon grid is 2.3 MB, ~0.5 MB gzipped
@@ -379,7 +453,7 @@ def get_session(session_id: str | None) -> tuple[str, dict]:
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE)
     session_id: str | None = None
 
 
@@ -395,6 +469,8 @@ async def chat_once(message: str, session_id: str | None, emit=lambda event: Non
     session_id, session = get_session(session_id)
     run_id = str(uuid.uuid4())
     contexts[run_id] = AgentContexts()
+    trim(contexts, MAX_CONTEXTS)
+    trim(sessions, MAX_SESSIONS)
     hooks = Hooks(contexts[run_id], emit)
     run = Research(hooks=hooks)
     hooks.run = run
@@ -409,18 +485,33 @@ async def chat_once(message: str, session_id: str | None, emit=lambda event: Non
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    return await chat_once(request.message, request.session_id)
+async def chat(body: ChatRequest, request: Request):
+    ip = client_ip(request)
+    if refused := admit(ip):
+        raise HTTPException(429, refused)
+    try:
+        return await chat_once(body.message, body.session_id)
+    finally:
+        release(ip)
 
 
 @app.get("/run")
-async def run_stream(message: str, session_id: str | None = None):
+async def run_stream(request: Request, message: str = Query(min_length=1, max_length=MAX_MESSAGE),
+                     session_id: str | None = None):
     """The same as /chat, streamed as Server-Sent Events so the page can show progress."""
+    ip = client_ip(request)
+    if refused := admit(ip):
+        # An HTTP error would reach the page only as a dropped connection: send the reason as an event.
+        refusal = json.dumps({"type": "error", "message": refused})
+        return StreamingResponse(iter([f"data: {refusal}\n\n"]), media_type="text/event-stream")
     queue: asyncio.Queue = asyncio.Queue()
 
     async def work():
-        response = await chat_once(message, session_id, queue.put_nowait)
-        queue.put_nowait({"type": "done", **response.model_dump()})
+        try:
+            response = await chat_once(message, session_id, queue.put_nowait)
+            queue.put_nowait({"type": "done", **response.model_dump()})
+        finally:
+            release(ip)  # also on Stop: cancelling the task lands here
 
     task = asyncio.create_task(work())
 
