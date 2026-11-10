@@ -399,48 +399,54 @@ def trim(store: dict, limit: int):
         store.pop(next(iter(store)))  # dicts keep insertion order: this is the oldest
 
 
-# --- Limits: every run spends Gemini credits, and the URL is public ---
+# --- Limits: every run spends Gemini credits ---
 
-PER_IP_AT_ONCE, PER_IP_PER_HOUR = 2, 20
+PER_VISITOR_AT_ONCE, PER_VISITOR_PER_HOUR = 2, 20
 ALL_AT_ONCE, ALL_PER_HOUR = 6, 150
 MAX_MESSAGE = 1000  # characters
-running: Counter = Counter()  # ip -> runs in progress
-started: dict[str, deque] = defaultdict(deque)  # ip, or "*" for everyone -> start times in the last hour
+running: Counter = Counter()  # visitor -> runs in progress
+started: dict[str, deque] = defaultdict(deque)  # visitor, or "*" for everyone -> start times in the last hour
 
 
-def client_ip(request: Request) -> str:
-    # Cloud Run puts the caller's address in X-Forwarded-For. A caller can prepend fake entries to dodge
-    # the per-IP limit, but not the overall limits, which cap total spend either way.
+def visitor(request: Request) -> str:
+    """Who is asking: the signed-in account behind Identity-Aware Proxy, else the IP address."""
+    # On Cloud Run only IAP can reach the app, and IAP sets this header to "accounts.google.com:<email>".
+    # Keying limits on it keeps graders on one campus network from sharing a limit.
+    email = request.headers.get("x-goog-authenticated-user-email")
+    if email:
+        return email.split(":", 1)[-1].lower()
+    # Locally there's no IAP: use the caller's address. A caller can fake X-Forwarded-For to dodge the
+    # per-visitor limit, but not the overall limits, which cap total spend either way.
     forwarded = request.headers.get("x-forwarded-for")
     return forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "?")
 
 
-def admit(ip: str) -> str | None:
-    """Start a run for this caller, or say why not."""
+def admit(who: str) -> str | None:
+    """Start a run for this visitor, or say why not."""
     now = time.monotonic()
-    for key in (ip, "*"):
+    for key in (who, "*"):
         while started[key] and now - started[key][0] > 3600:
             started[key].popleft()
-    if len(started) > 10_000:  # forget callers with nothing in the last hour
-        for key in [k for k, q in started.items() if not q and k not in (ip, "*")]:
+    if len(started) > 10_000:  # forget visitors with nothing in the last hour
+        for key in [k for k, q in started.items() if not q and k not in (who, "*")]:
             del started[key]
-    if running[ip] >= PER_IP_AT_ONCE:
-        return f"You already have {PER_IP_AT_ONCE} questions running. Wait for one to finish, or stop it."
-    if len(started[ip]) >= PER_IP_PER_HOUR:
-        minutes = int((3600 - (now - started[ip][0])) / 60) + 1
-        return f"That's {PER_IP_PER_HOUR} questions in the last hour, the limit per visitor. Try again in {minutes} min."
+    if running[who] >= PER_VISITOR_AT_ONCE:
+        return f"You already have {PER_VISITOR_AT_ONCE} questions running. Wait for one to finish, or stop it."
+    if len(started[who]) >= PER_VISITOR_PER_HOUR:
+        minutes = int((3600 - (now - started[who][0])) / 60) + 1
+        return f"That's {PER_VISITOR_PER_HOUR} questions in the last hour, the limit per visitor. Try again in {minutes} min."
     if sum(running.values()) >= ALL_AT_ONCE or len(started["*"]) >= ALL_PER_HOUR:
         return "The site is busy right now. Try again in a few minutes."
-    running[ip] += 1
-    started[ip].append(now)
+    running[who] += 1
+    started[who].append(now)
     started["*"].append(now)
     return None
 
 
-def release(ip: str):
-    running[ip] -= 1
-    if running[ip] <= 0:
-        del running[ip]
+def release(who: str):
+    running[who] -= 1
+    if running[who] <= 0:
+        del running[who]
 
 app = FastAPI()
 app.add_middleware(GZipMiddleware, minimum_size=2000)  # the hexagon grid is 2.3 MB, ~0.5 MB gzipped
@@ -486,21 +492,21 @@ async def chat_once(message: str, session_id: str | None, emit=lambda event: Non
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest, request: Request):
-    ip = client_ip(request)
-    if refused := admit(ip):
+    who = visitor(request)
+    if refused := admit(who):
         raise HTTPException(429, refused)
     try:
         return await chat_once(body.message, body.session_id)
     finally:
-        release(ip)
+        release(who)
 
 
 @app.get("/run")
 async def run_stream(request: Request, message: str = Query(min_length=1, max_length=MAX_MESSAGE),
                      session_id: str | None = None):
     """The same as /chat, streamed as Server-Sent Events so the page can show progress."""
-    ip = client_ip(request)
-    if refused := admit(ip):
+    who = visitor(request)
+    if refused := admit(who):
         # An HTTP error would reach the page only as a dropped connection: send the reason as an event.
         refusal = json.dumps({"type": "error", "message": refused})
         return StreamingResponse(iter([f"data: {refusal}\n\n"]), media_type="text/event-stream")
@@ -511,7 +517,7 @@ async def run_stream(request: Request, message: str = Query(min_length=1, max_le
             response = await chat_once(message, session_id, queue.put_nowait)
             queue.put_nowait({"type": "done", **response.model_dump()})
         finally:
-            release(ip)  # also on Stop: cancelling the task lands here
+            release(who)  # also on Stop: cancelling the task lands here
 
     task = asyncio.create_task(work())
 
