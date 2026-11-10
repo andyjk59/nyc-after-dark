@@ -33,6 +33,9 @@ MODEL = LitellmModel(model="vertex_ai/gemini-3.5-flash", api_key="unused")
 # A stalled model call would eat the run's time budget: normal calls take 3-15 s, so give up after 40 s
 # and retry, at most twice.
 SETTINGS = ModelSettings(extra_args={"vertex_location": "global", "timeout": 40, "num_retries": 2})
+# The Writer makes one long call that writes the whole answer: 25-70 s on Cloud Run. Cutting it off at
+# 40 s and starting over wastes the time already spent, so it gets one call up to 70 s (its budget is 75).
+WRITER_SETTINGS = ModelSettings(extra_args={"vertex_location": "global", "timeout": 70, "num_retries": 1})
 
 # The Lead gets this many researchers in all. Prompts ask for restraint; code enforces it.
 MAX_RESEARCHERS = 8
@@ -54,6 +57,14 @@ TABLE_NAMES = [r[0] for r in DB.execute("SELECT table_name FROM information_sche
 SCHEMA = (HERE / "data" / "schema.md").read_text()
 NIGHTLIGHT_PERIODS = [r[0] for r in DB.execute("SELECT DISTINCT period FROM nightlights ORDER BY period").fetchall()]
 LATEST_HOUR = DB.execute("SELECT max(ts_local) FROM nyiso_load").fetchone()[0]
+
+
+def query(sql: str, params: list | None = None) -> duckdb.DuckDBPyConnection:
+    """Run SQL on its own cursor. The shared connection refuses a second call while one is running,
+    and the page loads several map endpoints at once."""
+    cursor = DB.cursor()
+    cursor.execute(sql, params or [])
+    return cursor
 
 
 def schema_for(tables: list[str]) -> str:
@@ -324,7 +335,7 @@ Citywide grid load and prices aren't on the map: for those, don't call it. Layer
 est_overnight_lighting for where modeled lighting is, night_lights or night_lights_change for satellite
 brightness (periods: {", ".join(NIGHTLIGHT_PERIODS)}), commercial_share for building mix.""",
     model=MODEL,
-    model_settings=SETTINGS,
+    model_settings=WRITER_SETTINGS,
     tools=[show_on_map],
 )
 
@@ -562,18 +573,18 @@ async def run_stream(request: Request, message: str = Query(min_length=1, max_le
 def map_layer(layer: str, period: str | None = None, compare_to: str | None = None):
     """Values per hexagon for one map layer."""
     if layer == "est_overnight_lighting":
-        rows = DB.execute("SELECT hex, est_lighting_base_mw * 1000 FROM hex_cells WHERE est_lighting_base_mw > 0").fetchall()
+        rows = query("SELECT hex, est_lighting_base_mw * 1000 FROM hex_cells WHERE est_lighting_base_mw > 0").fetchall()
         meta = {"unit": "kW", "label": "Estimated commercial lighting, 1-5 a.m.",
                 "caveat": "Modeled: ComStock intensities spread over PLUTO floor area. Not measured."}
     elif layer == "commercial_share":
-        rows = DB.execute("SELECT hex, commercial_share * 100 FROM hex_cells WHERE bldgarea_sqft > 0").fetchall()
+        rows = query("SELECT hex, commercial_share * 100 FROM hex_cells WHERE bldgarea_sqft > 0").fetchall()
         meta = {"unit": "%", "label": "Commercial share of floor area", "caveat": "PLUTO 26v2."}
     elif layer == "night_lights" and period in NIGHTLIGHT_PERIODS:
-        rows = DB.execute("SELECT hex, radiance_mean FROM hex_nightlights WHERE period = ? AND radiance_mean IS NOT NULL", [period]).fetchall()
+        rows = query("SELECT hex, radiance_mean FROM hex_nightlights WHERE period = ? AND radiance_mean IS NOT NULL", [period]).fetchall()
         meta = {"unit": "nW/cm²/sr", "label": f"Satellite brightness, {period}",
                 "caveat": "Measured by NASA Black Marble at ~1:30 a.m. solar time; includes streets and signs. Pixels are ~460 m, so values between them are interpolated."}
     elif layer == "night_lights_change" and period in NIGHTLIGHT_PERIODS and compare_to in NIGHTLIGHT_PERIODS:
-        rows = DB.execute("""SELECT a.hex, (a.radiance_mean - b.radiance_mean) / b.radiance_mean * 100
+        rows = query("""SELECT a.hex, (a.radiance_mean - b.radiance_mean) / b.radiance_mean * 100
             FROM hex_nightlights a JOIN hex_nightlights b USING (hex)
             WHERE a.period = ? AND b.period = ? AND b.radiance_mean > 1 AND a.radiance_mean IS NOT NULL""",
                           [period, compare_to]).fetchall()
@@ -586,11 +597,11 @@ def map_layer(layer: str, period: str | None = None, compare_to: str | None = No
 
 @app.get("/hex_info")
 def hex_info(hex: str):
-    row = DB.execute("""SELECT c.*, n.radiance_mean AS radiance_2025 FROM hex_cells c
+    row = query("""SELECT c.*, n.radiance_mean AS radiance_2025 FROM hex_cells c
         LEFT JOIN hex_nightlights n ON n.hex = c.hex AND n.period = '2025' WHERE c.hex = ?""", [hex]).fetchone()
     if row is None:
         raise HTTPException(404, "No such hexagon")
-    columns = [d[0] for d in DB.execute("SELECT c.*, 0 AS radiance_2025 FROM hex_cells c LIMIT 0").description]
+    columns = [d[0] for d in query("SELECT c.*, 0 AS radiance_2025 FROM hex_cells c LIMIT 0").description]
     return dict(zip(columns, row))
 
 
@@ -601,7 +612,7 @@ def meta():
 
 @app.get("/places.geojson")
 def places():
-    rows = DB.execute("SELECT name, kind, lat, lon, hex FROM places").fetchall()
+    rows = query("SELECT name, kind, lat, lon, hex FROM places").fetchall()
     return {"type": "FeatureCollection", "features": [
         {"type": "Feature", "properties": {"name": n, "kind": k, "hex": h}, "geometry": {"type": "Point", "coordinates": [lo, la]}}
         for n, k, la, lo, h in rows]}
