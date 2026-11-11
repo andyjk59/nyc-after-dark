@@ -1,4 +1,4 @@
-# NYC After Dark: a more cost effective City That Never Sleeps
+<img width="468" height="89" alt="image" src="https://github.com/user-attachments/assets/0d8a0175-547a-4e8e-aa0a-5e38b811d0a5" /># NYC After Dark: a more cost effective City That Never Sleeps
 
 This deep-research agent answers questions regarding NYC's overnight electricity usage, specifically in regards to how much of it is avoidable lighting in empty commercial buildings. Key information, such as energy usage by area, changes in energy usage over time, the brightness of certain areas via satellite view, and the commercial share of said energy usage, is displayed on a map of New York City.
 
@@ -7,7 +7,7 @@ The aim of this project is to inform users of the wasteful energy usage in New Y
 ## The Data
 
 ### NYISO
-- Measures hourly electricity usage for NYC and day-ahead wholesale prices for NYC (covers January 2016 to November 2, 2026). ********
+- Measures hourly electricity usage for NYC and day-ahead wholesale prices for NYC (covers January 2016 to now)
 - Public CSV files (one per month):
   - http://mis.nyiso.com/public/csv/palIntegrated/YYYYMM01palIntegrated_csv.zip (load)
   - http://mis.nyiso.com/public/csv/damlbmp/YYYYMM01damlbmp_zone_csv.zip (price)
@@ -44,8 +44,9 @@ For each query, a Lead agent might ask to clarify a vague question. Once a clear
 
 **The model** provides a response of July 3, 2026, with 1-5 AM electricity load averaging 7,994 MW (or 32,000 MWh) over 4 hours. The highest usage hour was 1 AM, with usage at 8,387 MW.
 
-•	Table: overnight_daily (a view; floor_mw is the 1–5 a.m. average load), built from nyiso_load
-•	Upstream file: NYISO hourly actual load for Zone J (New York City), http://mis.nyiso.com/public/csv/palIntegrated/YYYYMM01palIntegrated_csv.zip (July 2026 is 20260701palIntegrated_csv.zip)
+**Data used by the model:**
+- Table: overnight_daily (a view; floor_mw is the 1–5 a.m. average load), built from nyiso_load
+- Upstream file: NYISO hourly actual load for Zone J (New York City), http://mis.nyiso.com/public/csv/palIntegrated/YYYYMM01palIntegrated_csv.zip (July 2026 is 20260701palIntegrated_csv.zip)
 
 **Without model:** the knowledge stops at January 2025 and no real-time data is available; additionally, without a grid or city specified, the model is unable to give a specific response
 
@@ -53,16 +54,22 @@ For each query, a Lead agent might ask to clarify a vague question. Once a clear
 
 **The model** estimates commercial building costs would fall from 225 MW to 197 MW per night (1-5 AM) with the Lighting Controls retrofit proposed by ComStock upgrade 44; this is an estimated reduction of 12.3%, saving 40,600 MWh a year. At wholesale price, the reduced cost is $1.2M (2024 prices) to $2.0-2.5M (2025-2026 prices) per year. While retail rates are not available in the data, the savings likely be an uncomputable larger amount.
 
-•	Savings (modeled): comstock_annual, upgrade 0 (buildings as they are) vs. upgrade 44 (Lighting Controls), summed over NYC's five counties. Upstream: NREL ComStock 2025 release 3 (AMY2018) county aggregates on the OEDI public S3 bucket, https://oedi-data-lake.s3.amazonaws.com/nrel-pds-building-stock/end-use-load-profiles-for-us-building-stock/2025/comstock_amy2018_release_3/timeseries_aggregates/by_county/.
-•	Price (measured): overnight_daily.floor_price_usd_mwh (1–5 a.m. average), built from nyiso_price. Upstream: NYISO day-ahead zonal prices, zone N.Y.C., http://mis.nyiso.com/public/csv/damlbmp/YYYYMM01damlbmp_zone_csv.zip.
-•	Households and CO2 (cited constants): constants table: ny_household_kwh_per_month = 566 kWh (EIA Table 5A) gives about 6,170 households; co2_ll97_t_per_kwh = 0.000289 t/kWh (NYC Local Law 97) gives about 12,100 t CO2e a year. Each row carries its source URL.
-•	In the app: the lighting and grid researchers' run_sql; the Writer's map layer (est_overnight_lighting, from hex_cells) shows modeled overnight lighting by hexagon.
+**Data used by the model:**
+- Savings (modeled): comstock_annual, upgrade 0 (buildings as they are) vs. upgrade 44 (Lighting Controls), summed over NYC's five counties. Upstream: NREL ComStock 2025 release 3 (AMY2018) county aggregates on the OEDI public S3 bucket, https://oedi-data-lake.s3.amazonaws.com/nrel-pds-building-stock/end-use-load-profiles-for-us-building-stock/2025/comstock_amy2018_release_3/timeseries_aggregates/by_county/.
+- Price (measured): overnight_daily.floor_price_usd_mwh (1–5 a.m. average), built from nyiso_price. Upstream: NYISO day-ahead zonal prices, zone N.Y.C., http://mis.nyiso.com/public/csv/damlbmp/YYYYMM01damlbmp_zone_csv.zip.
+- Households and CO2 (cited constants): constants table: ny_household_kwh_per_month = 566 kWh (EIA Table 5A) gives about 6,170 households; co2_ll97_t_per_kwh = 0.000289 t/kWh (NYC Local Law 97) gives about 12,100 t CO2e a year. Each row carries its source URL.
 
 **Without model:** An estimate of $110-180M a year from invented inputs, covering homes and streetlights as well, but gives no sources. The model pulls from more specific recent retail prices, residential common areas, and assumed waste shares (but cannot support these estimates with evidence). It also lists implementation challenges.
 
 ### How has NYC overnight energy costs changed since 2020? When were they at their highest?
 
-**The model** 
+**The model** provides a response of $109M in 2020, $224M in 2021, $465M in 2022 (the highest cost year), $170M in 2023, $204M in 2024, $335M in 2025, and $347M in 2026 (so far). Average overnight costs peaked at $65.8/MWh in 2022, and the most expensive month was January 2026 ($151/MWh). The most expensive nights were January 27-28, 2026 ($600/MWh). These costs differ from those solely pertaining to light costs, and includes additional energy costs such as heating, refrigeration, appliances, etc.
+
+**Data used by the model:**
+- Table: nyiso_hourly (a view joining nyiso_load, nyiso_price and calendar); cost = load_mw × lbmp_usd_mwh summed over the 1–5 a.m. hours (hour_local 1–4). Peak month and nights come from the same view grouped by month and by date (or overnight_daily).
+- Upstream files: NYISO palIntegrated (hourly load, Zone J) and damlbmp zone files (day-ahead price, zone N.Y.C.), the same monthly zips as Questions 1 and 2.
+
+**Without model:** Accurately provides response of 2022 with explanations of 2020 being cheap, 2022 experiencing a gas price spike (followed by drop in 2023). Price ranges are estimated and information ends at 2024. January 2026, the peak month, is not observed.
 
 
 
