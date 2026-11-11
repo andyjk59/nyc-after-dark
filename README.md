@@ -1,8 +1,76 @@
-# NYC After Dark: how much energy does New York waste overnight?
+# NYC After Dark: a more cost effective City That Never Sleeps
 
-A deep-research agent that answers questions about NYC's overnight electricity use, and how much of it is avoidable lighting in empty commercial buildings, then draws the evidence on a map of the city at night.
+This deep-research agent answers questions regarding NYC's overnight electricity usage, specifically in regards to how much of it is avoidable lighting in empty commercial buildings. Key information, such as energy usage by area, changes in energy usage over time, the brightness of certain areas via satellite view, and the commercial share of said energy usage, is displayed on a map of New York City.
 
-*Work in progress. The full README (target user, data sources, sample queries with and without tools) comes with the first deploy.*
+The aim of this project is to inform users of the wasteful energy usage in New York City. While commercial buildings such as office spaces and stores must be well lit during the day, often these spaces go entirely unused at night; despite this, in many cases, the lights stay on. As such, this agent is directed towards two audiences: **policymakers**, in order to encourage policies such as motion activated lighting or other lower energy alternatives, and **normal New Yorkers**, in hopes that the last one to leave a space, whether it be an office, a classroom, or apartment might choose to turn off the lights where they otherwise might not.
 
-- Scope and data decisions: [`docs/planning/Project 2 Scope.md`](docs/planning/Project%202%20Scope.md)
-- Built on the course's `wikipedia-deep-research` starter (first commit) and Project 1's `/chat` response shape.
+## The Data
+
+### NYISO
+- Measures hourly electricity usage for NYC and day-ahead wholesale prices for NYC (covers January 2016 to November 2, 2026). ********
+- Public CSV files (one per month):
+  - http://mis.nyiso.com/public/csv/palIntegrated/YYYYMM01palIntegrated_csv.zip (load)
+  - http://mis.nyiso.com/public/csv/damlbmp/YYYYMM01damlbmp_zone_csv.zip (price)
+- build/fetch_nyiso.py [first YYYY-MM] [last YYYY-MM] (24 MB)
+- Tables: nyiso_load, nyiso_price, calendar; views nyiso_hourly, overnight_daily
+
+### NREL ComStock (U.S. Dept of Energy)
+- Modeled hourly lighting and electricity for NYC commerical buildings by borough and building type, both in their current state and with proposed upgrades that reduce energy usage (lighting controls, daylight sensors, occupancy sensors)
+- OEDI public S3 bucket: https://oedi-data-lake.s3.amazonaws.com/nrel-pds-building-stock/end-use-load-profiles-for-us-building-stock/2025/comstock_amy2018_release_3/timeseries_aggregates/by_county/ (NYC counties G3600050, G3600470, G3600610, G3600810, G3600850)
+- build/fetch_comstock.py (150 CSVs, 2.6 GB)
+- Tables: comstock_hourly, comstock_annual, type_crosswalk
+
+### NYC Open Data
+- MapPLUTO, includes data for every tax lot (floor area by use, building class, location) and Local Law 84 energy benchmarking (measures of annual electricity for large buildings from 2022-2024)
+- Socrata API:
+  - https://data.cityofnewyork.us/resource/64uk-42ks.csv (MapPLUTO)
+  - https://data.cityofnewyork.us/resource/5zyy-y8am.csv (LL84)
+- build/fetch_open_data.py (198 MB; optional NYC_APP_TOKEN raises the rate limit)
+- Tables: pluto, ll84, hex_cells (lots presented as hexagons for map)
+
+### NASA Black Marble (VIIRS satellite)
+- Measured nighttime light from space over NYC from 2013-2025 (VNP46A4), monthly from March to June 2019, March to June 2020, and October 2025 to September 2026 (VNP46A3)
+  - While data is available every month, downloading all data would be roughly 18GB of data; the chosen months represent yearly trends for 2013 to 2025 and specific data for March to June 2019 and 2020 to compare the impact of the Covid-19 pandemic, when many commercial buildings were vacant. The most recent 12 months of available data was also included
+- NASA LAADS DAAC API, tile h10v04:
+  - https://ladsweb.modaps.eosdis.nasa.gov/api/v2/content
+- build/fetch_blackmarble.py (33 HDF5 files, 4.1 GB; needs a free NASA Earthdata token as BLACKMARBLE_TOKEN in .env)
+- Tables: nightlights, hex_nightlights
+
+## Sample Queries
+
+For each query, a Lead agent might ask to clarify a vague question. Once a clear question is established, the Lead splits the question into research tasks and sends it to Researchers, which each answer an aspect of the question using the relevant data source. There are a total of 8 Researcher agents, which get sent in varying quantities depending on the complexity of the question and time spent to formulate a response. Research concludes either when all agents have completed their tasks or they elapse 3 minutes, at which point the existing researcher is sent to a Writer agent. The Writer turns the findings into a coherent response, picks the relevant information to display on the map, and provides sources based on the queries run by the Researchers. Each response also explains gaps in data or knowledge
+
+### What was the highest usage night in 2026 so far?
+
+**The model** provides a response of July 3, 2026, with 1-5 AM electricity load averaging 7,994 MW (or 32,000 MWh) over 4 hours. The highest usage hour was 1 AM, with usage at 8,387 MW.
+
+•	Table: overnight_daily (a view; floor_mw is the 1–5 a.m. average load), built from nyiso_load
+•	Upstream file: NYISO hourly actual load for Zone J (New York City), http://mis.nyiso.com/public/csv/palIntegrated/YYYYMM01palIntegrated_csv.zip (July 2026 is 20260701palIntegrated_csv.zip)
+
+**Without model:** the knowledge stops at January 2025 and no real-time data is available; additionally, without a grid or city specified, the model is unable to give a specific response
+
+### How much would installing motion sensor lighting reduce NYC's overnight energy costs?
+
+**The model** estimates commercial building costs would fall from 225 MW to 197 MW per night (1-5 AM) with the Lighting Controls retrofit proposed by ComStock upgrade 44; this is an estimated reduction of 12.3%, saving 40,600 MWh a year. At wholesale price, the reduced cost is $1.2M (2024 prices) to $2.0-2.5M (2025-2026 prices) per year. While retail rates are not available in the data, the savings likely be an uncomputable larger amount.
+
+•	Savings (modeled): comstock_annual, upgrade 0 (buildings as they are) vs. upgrade 44 (Lighting Controls), summed over NYC's five counties. Upstream: NREL ComStock 2025 release 3 (AMY2018) county aggregates on the OEDI public S3 bucket, https://oedi-data-lake.s3.amazonaws.com/nrel-pds-building-stock/end-use-load-profiles-for-us-building-stock/2025/comstock_amy2018_release_3/timeseries_aggregates/by_county/.
+•	Price (measured): overnight_daily.floor_price_usd_mwh (1–5 a.m. average), built from nyiso_price. Upstream: NYISO day-ahead zonal prices, zone N.Y.C., http://mis.nyiso.com/public/csv/damlbmp/YYYYMM01damlbmp_zone_csv.zip.
+•	Households and CO2 (cited constants): constants table: ny_household_kwh_per_month = 566 kWh (EIA Table 5A) gives about 6,170 households; co2_ll97_t_per_kwh = 0.000289 t/kWh (NYC Local Law 97) gives about 12,100 t CO2e a year. Each row carries its source URL.
+•	In the app: the lighting and grid researchers' run_sql; the Writer's map layer (est_overnight_lighting, from hex_cells) shows modeled overnight lighting by hexagon.
+
+**Without model:** An estimate of $110-180M a year from invented inputs, covering homes and streetlights as well, but gives no sources. The model pulls from more specific recent retail prices, residential common areas, and assumed waste shares (but cannot support these estimates with evidence). It also lists implementation challenges.
+
+### How has NYC overnight energy costs changed since 2020? When were they at their highest?
+
+**The model** 
+
+
+
+
+
+
+
+
+
+
+
