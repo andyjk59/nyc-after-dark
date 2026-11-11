@@ -1,4 +1,4 @@
-<img width="468" height="89" alt="image" src="https://github.com/user-attachments/assets/0d8a0175-547a-4e8e-aa0a-5e38b811d0a5" /># NYC After Dark: a more cost effective City That Never Sleeps
+# NYC After Dark: a more cost effective City That Never Sleeps
 
 This deep-research agent answers questions regarding NYC's overnight electricity usage, specifically in regards to how much of it is avoidable lighting in empty commercial buildings. Key information, such as energy usage by area, changes in energy usage over time, the brightness of certain areas via satellite view, and the commercial share of said energy usage, is displayed on a map of New York City.
 
