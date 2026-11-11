@@ -1,10 +1,12 @@
 import asyncio
 import json
+import os
 import re
+import threading
 import time
-import urllib.request
 import uuid
 from collections import Counter, defaultdict, deque
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -20,6 +22,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+import nyiso_refresh
 from context_panel import AgentContexts, PanelHooks, add_context_panel
 
 HERE = Path(__file__).parent
@@ -51,8 +54,16 @@ WRITER_SECONDS = 75
 
 # --- Data: one read-only DuckDB file, with no access to files or the network from SQL ---
 
-DB = duckdb.connect(str(HERE / "data" / "nyc_overnight.duckdb"), read_only=True,
-                    config={"enable_external_access": False, "lock_configuration": True})
+SHIPPED_DB = HERE / "data" / "nyc_overnight.duckdb"
+
+
+def open_db(path: Path) -> duckdb.DuckDBPyConnection:
+    return duckdb.connect(str(path), read_only=True, config={"enable_external_access": False, "lock_configuration": True})
+
+
+# DB and LATEST_HOUR are swapped for an up-to-date copy when the grid data refreshes (see below), so
+# read them at call time, never into another name at import.
+DB = open_db(SHIPPED_DB)
 TABLE_NAMES = [r[0] for r in DB.execute("SELECT table_name FROM information_schema.tables").fetchall()]
 SCHEMA = (HERE / "data" / "schema.md").read_text()
 NIGHTLIGHT_PERIODS = [r[0] for r in DB.execute("SELECT DISTINCT period FROM nightlights ORDER BY period").fetchall()]
@@ -133,12 +144,12 @@ def fetch_latest_nyiso(ctx: RunContextWrapper[Research], day: str) -> str:
         day: The date, YYYY-MM-DD. NYISO posts yesterday's file early each morning.
     """
     try:
-        d = datetime.strptime(day, "%Y-%m-%d").date()
-        url = f"http://mis.nyiso.com/public/csv/palIntegrated/{d:%Y%m%d}palIntegrated.csv"
-        with urllib.request.urlopen(url, timeout=20) as r:
-            text = r.read().decode()
+        found = nyiso_refresh.load_day(datetime.strptime(day, "%Y-%m-%d").date())
     except Exception as e:
         return f"Error: could not fetch NYISO data for {day}: {type(e).__name__}: {e}"
+    if found is None:
+        return f"Error: NYISO has no load file for {day} (not posted yet, or before 2001)."
+    url, text = found
     rows = [line.split(",") for line in text.splitlines()[1:] if '"N.Y.C."' in line]
     hours = [(r[0].strip('"')[11:16], float(r[4])) for r in rows if len(r) >= 5 and r[4]]
     if not hours:
@@ -204,14 +215,20 @@ Facts about the data:
 - A lights-out scenario is not in the data. Its standard assumption here: {retained:.0%} of overnight lighting
   stays on for egress, security and night shifts. Call it an assumption.
 - MW averaged over the 4 overnight hours x 4 x 365 / 1000 = GWh per year for those hours.
-- The newest grid hour in the database is {latest}. For anything newer, use fetch_latest_nyiso.
+- The newest grid hour in the database is {latest}; the most recent day is usually partial. For anything
+  newer, use fetch_latest_nyiso.
 - Compare Black Marble periods like with like: a year with a year, a month with the same month.
 - Identify places by borough, ZIP code or community district from the data (hex_cells has them), or by
   the places table's landmarks and neighborhoods (JOIN places USING (hex)).
-""".format(retained=LIGHTS_OUT_RETAINED, latest=LATEST_HOUR)
+"""
+
+
+def domain_notes() -> str:
+    return DOMAIN_NOTES.format(retained=LIGHTS_OUT_RETAINED, latest=LATEST_HOUR)
+
 
 RESEARCHERS = {
-    "grid": ("measured NYC electricity load and prices by hour, 2016 to yesterday; the 2020 shutdown",
+    "grid": ("measured NYC electricity load and prices by hour, 2016 to today; the 2020 shutdown",
              ["nyiso_load", "nyiso_price", "calendar", "nyiso_hourly", "overnight_daily", "constants"],
              [run_sql, fetch_latest_nyiso]),
     "lighting": ("modeled lighting and electricity by building type and borough, baseline vs the Lighting "
@@ -234,7 +251,7 @@ def make_researcher(kind: str, number: int) -> Agent:
 You research one task using SQL on a DuckDB database about NYC's overnight electricity. Your slice:
 {about}.
 
-{DOMAIN_NOTES}
+{domain_notes()}
 Your tables:
 {schema_for(tables)}
 
@@ -274,9 +291,9 @@ async def research(ctx: RunContextWrapper[Research], researcher: Literal["grid",
 
 # --- Lead and Writer ---
 
-lead = Agent(
-    name="Lead",
-    instructions=f"""\
+def lead_instructions(ctx, agent) -> str:
+    # A function, so the date is current after a grid refresh
+    return f"""\
 You lead a research team answering questions about energy NYC uses, and wastes, overnight.
 
 "Waste" can mean three things. Level 1: all overnight load (measured; includes homes, hospitals and
@@ -304,7 +321,12 @@ year is the latest: "since 2020" means 2020 through {LATEST_HOUR.year}.
    otherwise), and that overnight means 1-5 a.m.
 4. Read the findings. If part of the question is still unanswered, or two findings disagree, call
    research again for just that part. Do this at most twice. Don't re-check numbers already answered.
-5. When the question is covered, reply DONE and nothing else: a writer writes the answer.""",
+5. When the question is covered, reply DONE and nothing else: a writer writes the answer."""
+
+
+lead = Agent(
+    name="Lead",
+    instructions=lead_instructions,
     model=MODEL,
     model_settings=SETTINGS,
     tools=[research],
@@ -483,7 +505,57 @@ def release(who: str):
     if running[who] <= 0:
         del running[who]
 
-app = FastAPI()
+# --- Grid refresh: keep NYISO data current without a redeploy ---
+
+# On startup and then at most every REFRESH_SECONDS (checked when requests come in, since Cloud Run only
+# gives the app CPU while it starts up or serves), download NYISO's newest monthly files, add them to a
+# copy of the database, and switch to the copy. If anything fails, the app keeps the data it has.
+# NYISO_REFRESH=0 turns it off (e.g. offline).
+REFRESH_SECONDS = 6 * 3600
+refresh_lock = threading.Lock()
+last_refresh = None  # time.monotonic() of the last attempt
+db_path = SHIPPED_DB
+
+
+def refresh_grid():
+    global DB, LATEST_HOUR, db_path, last_refresh
+    if not refresh_lock.acquire(blocking=False):
+        return
+    try:
+        last_refresh = time.monotonic()
+        result = nyiso_refresh.refresh(db_path)
+        if result is None:
+            print(f"NYISO refresh: nothing newer than {LATEST_HOUR}", flush=True)
+            return
+        new_path, summary = result
+        new_db = open_db(new_path)
+        latest = new_db.execute("SELECT max(ts_local) FROM nyiso_load").fetchone()[0]
+        # Runs in progress keep their cursors on the old connection; new queries use the new one.
+        old_path, DB, LATEST_HOUR, db_path = db_path, new_db, latest, new_path
+        if old_path != SHIPPED_DB:
+            old_path.unlink(missing_ok=True)  # still readable by open cursors until they finish
+        print(f"NYISO refresh: {summary}", flush=True)
+    except Exception as e:
+        last_refresh = time.monotonic() - REFRESH_SECONDS + 1800  # NYISO hiccup: try again in 30 min
+        print(f"NYISO refresh failed, keeping grid data through {LATEST_HOUR}: {type(e).__name__}: {e}", flush=True)
+    finally:
+        refresh_lock.release()
+
+
+def maybe_refresh():
+    if os.environ.get("NYISO_REFRESH", "1") == "0" or refresh_lock.locked():
+        return
+    if last_refresh is None or time.monotonic() - last_refresh > REFRESH_SECONDS:
+        threading.Thread(target=refresh_grid, daemon=True).start()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    maybe_refresh()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=2000)  # the hexagon grid is 2.3 MB, ~0.5 MB gzipped
 add_context_panel(app, contexts)
 
@@ -527,6 +599,7 @@ async def chat_once(message: str, session_id: str | None, emit=lambda event: Non
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest, request: Request):
+    maybe_refresh()
     who = visitor(request)
     if refused := admit(who):
         raise HTTPException(429, refused)
@@ -540,6 +613,7 @@ async def chat(body: ChatRequest, request: Request):
 async def run_stream(request: Request, message: str = Query(min_length=1, max_length=MAX_MESSAGE),
                      session_id: str | None = None):
     """The same as /chat, streamed as Server-Sent Events so the page can show progress."""
+    maybe_refresh()
     who = visitor(request)
     if refused := admit(who):
         # An HTTP error would reach the page only as a dropped connection: send the reason as an event.
@@ -607,6 +681,7 @@ def hex_info(hex: str):
 
 @app.get("/meta")
 def meta():
+    maybe_refresh()  # the page calls this on load
     return {"periods": NIGHTLIGHT_PERIODS, "layers": MAP_LAYERS, "latest_grid_hour": LATEST_HOUR}
 
 
