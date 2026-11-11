@@ -14,6 +14,8 @@ The aim of this project is to inform users of the wasteful energy usage in New Y
 - build/fetch_nyiso.py [first YYYY-MM] [last YYYY-MM] (24 MB)
 - Tables: nyiso_load, nyiso_price, calendar; views nyiso_hourly, overnight_daily
 
+***Note: the NYISO data available in the repo stops at November 3, 2026. The running app re-downloads NYISO's newest monthly files on startup and every 6 hours, which includes data from the last hour or so***
+
 ### NREL ComStock (U.S. Dept of Energy)
 - Modeled hourly lighting and electricity for NYC commercial buildings by borough and building type, both in their current state and with a set of upgrades that reduce energy usage (lighting controls, daylight sensors, occupancy sensors)
 - OEDI public S3 bucket: https://oedi-data-lake.s3.amazonaws.com/nrel-pds-building-stock/end-use-load-profiles-for-us-building-stock/2025/comstock_amy2018_release_3/timeseries_aggregates/by_county/ (NYC counties G3600050, G3600470, G3600610, G3600810, G3600850)
